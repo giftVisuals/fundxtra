@@ -1,7 +1,7 @@
 import { cert, getApps, initializeApp, type App } from 'firebase-admin/app';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
-import { env, hasFirestore } from '../config/env';
+import { env, hasFirestore, serviceAccount } from '../config/env';
 import { logger } from './logger';
 
 /**
@@ -29,20 +29,27 @@ function initialise(): App {
     });
   }
 
-  if (!env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY) {
+  if (!serviceAccount.ok) {
+    // Carries the specific reason — missing variable, bad JSON, or a
+    // private_key that is not a PEM key — rather than a generic message.
     throw new Error(
-      'Firebase Admin credentials are missing. Set FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY.',
+      serviceAccount.source === 'none'
+        ? 'Firebase Admin credentials are missing. Set FIREBASE_SERVICE_ACCOUNT to the service-account JSON from the Firebase console.'
+        : serviceAccount.reason,
     );
   }
 
+  const { account } = serviceAccount;
+
   return initializeApp({
+    // Newline normalisation already happened in resolveServiceAccount, which
+    // handles every shape a dashboard or shell can leave a PEM key in.
     credential: cert({
-      projectId: env.FIREBASE_PROJECT_ID,
-      clientEmail: env.FIREBASE_CLIENT_EMAIL,
-      // Dashboards (Railway, Vercel) store the PEM with escaped newlines.
-      privateKey: env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      projectId: account.projectId,
+      clientEmail: account.clientEmail,
+      privateKey: account.privateKey,
     }),
-    projectId: env.FIREBASE_PROJECT_ID,
+    projectId: account.projectId,
     storageBucket: env.FIREBASE_STORAGE_BUCKET,
   });
 }

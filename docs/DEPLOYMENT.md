@@ -32,18 +32,26 @@ fail with a console link to create them — deploying them up front avoids that.
 ### Get the Admin SDK credentials
 
 Firebase console → ⚙ **Project settings** → **Service accounts** →
-**Generate new private key**. That downloads a JSON file. You need three fields
-from it:
+**Generate new private key**. That downloads a JSON file.
 
-| JSON field | Environment variable |
-| --- | --- |
-| `project_id` | `FIREBASE_PROJECT_ID` |
-| `client_email` | `FIREBASE_CLIENT_EMAIL` |
-| `private_key` | `FIREBASE_PRIVATE_KEY` |
+Paste the **entire file** — from the opening `{` to the closing `}` — as one
+variable on Railway:
 
-Keep the whole private key including the `-----BEGIN`/`-----END` lines. Railway
-and Vercel store it with literal `\n` sequences; the API converts those back to
-real newlines, so either form works.
+```
+FIREBASE_SERVICE_ACCOUNT={"type":"service_account","project_id":"fundxtra",...}
+```
+
+One variable, one paste. The split form (`FIREBASE_CLIENT_EMAIL` +
+`FIREBASE_PRIVATE_KEY`) still works and takes second place when both are set,
+but prefer the single variable: a multi-line PEM key pasted into a dashboard
+field is the most common way this deploy breaks. Base64 of the same JSON is
+accepted too, for a form that rewrites newlines.
+
+Parsing is strict and every failure is reported on `/health` with its reason —
+truncated paste, missing `client_email`, a `private_key` that is not a PEM key.
+A credential that is present but unusable is worse than an absent one, because
+without a reason the deploy looks configured while every request fails, so it is
+never reported as merely "missing".
 
 **These credentials bypass every security rule.** They belong only in the API's
 environment — never in the frontend, never in the repository.
@@ -105,9 +113,8 @@ CORS_ORIGINS=https://fundxtra.name.ng,https://fundxtra.vercel.app
 SESSION_SECRET=            # openssl rand -base64 48
 TELEGRAM_BOT_TOKEN=        # from @BotFather
 TELEGRAM_BOT_USERNAME=fundxtrabot
+FIREBASE_SERVICE_ACCOUNT=  # the whole service-account JSON, one paste
 FIREBASE_PROJECT_ID=fundxtra
-FIREBASE_CLIENT_EMAIL=     # from the service account JSON
-FIREBASE_PRIVATE_KEY=      # from the service account JSON
 FIREBASE_STORAGE_BUCKET=fundxtra.firebasestorage.app
 REWARD_PROVIDER=none
 PRIMARY_ADMIN_TELEGRAM_ID=6438544386
@@ -122,9 +129,11 @@ Do **not** set `PORT` — Railway injects it. Do **not** set `ALLOW_DEV_AUTH`.
 curl https://<your-service>.up.railway.app/health
 ```
 
-`ok: true` means everything is configured. `ok: false` lists exactly which
-variables are missing in `missingConfiguration`, plus any `warnings` — such as
-a mock reward provider or dev auth being enabled in production.
+`ready: true` means everything is configured. `ready: false` lists exactly what
+is unset — or, for a credential that is set but unusable, what is wrong with it
+— in `missingConfiguration`, plus any `warnings` such as a mock reward provider
+or dev auth being enabled in production. The response is 200 either way, by
+design: see the probe note above.
 
 Then seed the reward catalogue and the primary admin record:
 
@@ -167,25 +176,22 @@ listed, so a future nested route cannot quietly ship without the header.
 
 ### Variables
 
-Vercel → **Settings** → **Environment Variables**. Anything prefixed
-`NEXT_PUBLIC_` is embedded in the browser bundle and is public — never put a
-secret behind that prefix.
+**None.** The frontend reads no environment variables in production.
 
-```
-NEXT_PUBLIC_API_URL=https://<your-service>.up.railway.app
-NEXT_PUBLIC_TELEGRAM_BOT=fundxtrabot
-NEXT_PUBLIC_SUPPORT_HANDLE=@fundxtracarebot
-NEXT_PUBLIC_SITE_URL=https://fundxtra.name.ng
-NEXT_PUBLIC_FIREBASE_API_KEY=AIzaSyCtBLHz9_rj9lSm2fDiJ-YUXvZPvkrjw1A
-NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=fundxtra.firebaseapp.com
-NEXT_PUBLIC_FIREBASE_PROJECT_ID=fundxtra
-NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=fundxtra.firebasestorage.app
-NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=310281010469
-NEXT_PUBLIC_FIREBASE_APP_ID=1:310281010469:web:90139ba733388546afaecc
-```
+Every value it needs is public by nature — the API origin, the bot handle, the
+support handle, the site URL — and all of them are committed in
+`apps/web/lib/config.ts`. Two consequences, both wanted: a Vercel deploy cannot
+break because someone forgot a variable, and there is no dashboard field that
+could tempt a secret into the browser bundle. Every real secret lives on the
+API, which is the only place one can be used safely.
 
-Once the API URL is known, add the Vercel domain to `CORS_ORIGINS` on Railway
-and redeploy the API — otherwise every browser request is rejected.
+To change the API origin or the bot handle, edit `apps/web/lib/config.ts` and
+push. `NEXT_PUBLIC_*` overrides are still honoured in a local `.env` for
+pointing a dev site at a different API.
+
+The Firebase web SDK is not used at all — every read goes through the API — so
+there is no `NEXT_PUBLIC_FIREBASE_*` configuration and the `firebase` client
+dependency has been removed.
 
 ### Custom domain
 

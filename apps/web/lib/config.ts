@@ -1,57 +1,52 @@
 /**
  * Frontend configuration.
  *
- * Only `NEXT_PUBLIC_*` values are readable in the browser, and everything here
- * is intentionally public: an API origin, a bot handle, a support handle and
- * the Firebase web config. No secret is referenced in this file, and none
- * should ever be added to it — anything behind the `NEXT_PUBLIC_` prefix is
- * embedded verbatim in the client bundle.
+ * Everything here is public by nature — an API origin, a bot handle, a support
+ * handle, a site URL — and every value is committed in this file rather than
+ * read from a hosting dashboard. That is deliberate: the frontend needs **no
+ * environment variables at all** on Vercel, so a deploy cannot break because a
+ * variable was forgotten, and there is no dashboard field that could tempt a
+ * secret into the browser bundle. Every real secret lives on the API, which is
+ * the only place that can use one safely.
+ *
+ * `NEXT_PUBLIC_*` overrides are still honoured when present, for local work
+ * against a different API. Nothing secret may ever be added here: anything
+ * behind that prefix is embedded verbatim in the client bundle.
  */
 
-function required(value: string | undefined, name: string, fallback: string): string {
-  if (value && value.length > 0) return value;
-  if (process.env.NODE_ENV === 'production' && typeof window === 'undefined') {
-    // Surfaced at build time, where it can still be fixed, rather than as a
-    // runtime failure in a user's Telegram WebView.
-    console.warn(`[fundxtra] ${name} is not set; falling back to "${fallback}"`);
-  }
-  return fallback;
+/**
+ * Where the API lives.
+ *
+ * This is the Railway service URL. Change it here, in the repository, and
+ * redeploy — it is not a dashboard setting. `localhost` is used when running
+ * the site locally with `npm run dev`.
+ */
+const API_ORIGIN = 'https://fundxtra-api.up.railway.app';
+
+/** Telegram bot that hosts the Mini App. */
+const BOT_USERNAME = 'fundxtrabot';
+
+/** Support account shown wherever a user needs a human — PIN resets included. */
+const SUPPORT_HANDLE = '@fundxtracarebot';
+
+/** Public marketing site. */
+const SITE_URL = 'https://fundxtra.name.ng';
+
+function override(value: string | undefined, fallback: string): string {
+  return value && value.length > 0 ? value : fallback;
 }
 
-export const config = {
-  apiUrl: required(process.env.NEXT_PUBLIC_API_URL, 'NEXT_PUBLIC_API_URL', 'http://localhost:8080').replace(
-    /\/$/,
-    '',
-  ),
-  botUsername: required(
-    process.env.NEXT_PUBLIC_TELEGRAM_BOT,
-    'NEXT_PUBLIC_TELEGRAM_BOT',
-    'fundxtrabot',
-  ).replace(/^@/, ''),
-  supportHandle: required(
-    process.env.NEXT_PUBLIC_SUPPORT_HANDLE,
-    'NEXT_PUBLIC_SUPPORT_HANDLE',
-    '@fundxtracarebot',
-  ),
-  siteUrl: required(
-    process.env.NEXT_PUBLIC_SITE_URL,
-    'NEXT_PUBLIC_SITE_URL',
-    'https://fundxtra.name.ng',
-  ).replace(/\/$/, ''),
+const isDevelopment = process.env.NODE_ENV === 'development';
 
-  firebase: {
-    apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? '',
-    authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ?? '',
-    projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? '',
-    storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ?? '',
-    messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? '',
-    appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID ?? '',
-  },
+export const config = {
+  apiUrl: override(
+    process.env.NEXT_PUBLIC_API_URL,
+    isDevelopment ? 'http://localhost:8080' : API_ORIGIN,
+  ).replace(/\/$/, ''),
+  botUsername: override(process.env.NEXT_PUBLIC_TELEGRAM_BOT, BOT_USERNAME).replace(/^@/, ''),
+  supportHandle: override(process.env.NEXT_PUBLIC_SUPPORT_HANDLE, SUPPORT_HANDLE),
+  siteUrl: override(process.env.NEXT_PUBLIC_SITE_URL, SITE_URL).replace(/\/$/, ''),
 } as const;
 
 export const supportUrl = `https://t.me/${config.supportHandle.replace(/^@/, '')}`;
 export const startEarningUrl = `https://t.me/${config.botUsername}`;
-
-/** True when the Firebase web config is complete enough to initialise. */
-export const firebaseConfigured =
-  config.firebase.apiKey.length > 0 && config.firebase.projectId.length > 0;

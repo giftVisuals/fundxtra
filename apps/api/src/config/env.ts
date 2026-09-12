@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { PRIMARY_ADMIN_TELEGRAM_ID } from '@fundxtra/shared';
+import { resolveServiceAccount, type ServiceAccountResult } from './service-account';
 
 /**
  * Environment configuration.
@@ -41,7 +42,15 @@ const envSchema = z.object({
     .optional()
     .transform((value) => value === 'true'),
 
-  /** Firebase Admin service-account credentials. */
+  /**
+   * Firebase Admin service-account credentials.
+   *
+   * Preferred: FIREBASE_SERVICE_ACCOUNT, holding the entire JSON file Firebase
+   * gives you (raw or base64). One value, one paste, and no multi-line PEM key
+   * to mangle in a dashboard field. The split pair below still works and is
+   * used when the single variable is absent.
+   */
+  FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
   FIREBASE_PROJECT_ID: z.string().min(1).default('fundxtra'),
   FIREBASE_CLIENT_EMAIL: z.string().email().optional(),
   /** PEM key. Newlines may be escaped as \n when set through a dashboard. */
@@ -85,10 +94,21 @@ export const env: Env = load();
 export const isProduction = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
 
-/** Firestore is reachable when we have real credentials or an emulator. */
-export const hasFirestore =
-  Boolean(env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) ||
-  Boolean(env.FIRESTORE_EMULATOR_HOST);
+/**
+ * Resolved service-account credentials, from either accepted form.
+ *
+ * Resolved once at boot so a malformed value is reported on `/health` rather
+ * than surfacing as an opaque credential error on the first request.
+ */
+export const serviceAccount: ServiceAccountResult = resolveServiceAccount({
+  serviceAccountJson: env.FIREBASE_SERVICE_ACCOUNT,
+  clientEmail: env.FIREBASE_CLIENT_EMAIL,
+  privateKey: env.FIREBASE_PRIVATE_KEY,
+  projectId: env.FIREBASE_PROJECT_ID,
+});
+
+/** Firestore is reachable when we have usable credentials or an emulator. */
+export const hasFirestore = serviceAccount.ok || Boolean(env.FIRESTORE_EMULATOR_HOST);
 
 /** Telegram initData can be verified only with the bot token. */
 export const hasTelegram = Boolean(env.TELEGRAM_BOT_TOKEN);
@@ -103,7 +123,11 @@ export function readiness(): { ready: boolean; missing: string[]; warnings: stri
   const warnings: string[] = [];
 
   if (!env.SESSION_SECRET) missing.push('SESSION_SECRET');
-  if (!hasFirestore) missing.push('FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY');
+  if (!hasFirestore) {
+    // A credential that is present but unusable reports the parse failure,
+    // which is actionable; an absent one just names the variable to set.
+    missing.push(serviceAccount.ok ? 'FIREBASE_SERVICE_ACCOUNT' : serviceAccount.reason);
+  }
   if (!hasTelegram) missing.push('TELEGRAM_BOT_TOKEN');
 
   if (env.REWARD_PROVIDER === 'nasfampay' && !env.NASFAMPAY_API_KEY) {

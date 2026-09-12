@@ -18,6 +18,7 @@ import request from 'supertest';
 process.env.NODE_ENV = 'production';
 delete process.env.SESSION_SECRET;
 delete process.env.TELEGRAM_BOT_TOKEN;
+delete process.env.FIREBASE_SERVICE_ACCOUNT;
 delete process.env.FIREBASE_CLIENT_EMAIL;
 delete process.env.FIREBASE_PRIVATE_KEY;
 
@@ -46,9 +47,7 @@ describe('probes on an unconfigured deployment', () => {
 
     expect(response.body.missingConfiguration).toContain('SESSION_SECRET');
     expect(response.body.missingConfiguration).toContain('TELEGRAM_BOT_TOKEN');
-    expect(response.body.missingConfiguration).toContain(
-      'FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY',
-    );
+    expect(response.body.missingConfiguration).toContain('FIREBASE_SERVICE_ACCOUNT');
   });
 
   it('fails /ready until the configuration is complete', async () => {
@@ -56,5 +55,26 @@ describe('probes on an unconfigured deployment', () => {
 
     expect(response.status).toBe(503);
     expect(response.body.ready).toBe(false);
+  });
+});
+
+describe('probes on a misconfigured deployment', () => {
+  it('reports why a pasted service account is unusable, not just that it is missing', async () => {
+    // A truncated paste is the realistic failure: the variable is set, so
+    // "missing" would be actively misleading.
+    process.env.FIREBASE_SERVICE_ACCOUNT = '{"project_id":"fundxtra","client_em';
+    vi.resetModules();
+    const freshApp = (await import('../src/app')).createApp();
+    delete process.env.FIREBASE_SERVICE_ACCOUNT;
+
+    const response = await request(freshApp).get('/health');
+
+    expect(response.status).toBe(200);
+    expect(response.body.ready).toBe(false);
+    expect(
+      response.body.missingConfiguration.some((entry: string) =>
+        entry.includes('not valid JSON'),
+      ),
+    ).toBe(true);
   });
 });
