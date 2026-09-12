@@ -403,9 +403,12 @@ img, svg, video { display: block; max-width: 100%; }
   color: var(--fx-brand-ink);
   border: 1px solid var(--fx-brand-border);
   border-radius: 0 0 var(--fx-radius-md) var(--fx-radius-md);
-  box-shadow: var(--fx-shadow-md);
   transition: transform var(--fx-duration-fast) var(--fx-ease-out);
 }
+/* The shadow is applied only on focus. A transform moves the element out of
+   view but does not clip its shadow, so an always-on shadow bled a visible
+   smudge across the top of every page. */
 .fx-skip-link:focus {
   transform: translate(-50%, 0);
+  box-shadow: var(--fx-shadow-md);
 }
