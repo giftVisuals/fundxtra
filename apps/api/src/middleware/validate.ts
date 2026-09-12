@@ -60,3 +60,20 @@ function toAppError(error: unknown): unknown {
   }
   return new AppError(ERROR_CODES.VALIDATION_FAILED, { fields });
 }
+
+/**
+ * Read a required route parameter as a string.
+ *
+ * Express 5 types `req.params[k]` as `string | string[] | undefined`, because a
+ * pattern can repeat a name. Every route here uses single-value params, so this
+ * narrows once, centrally, and rejects the impossible cases loudly rather than
+ * letting an `undefined` reach a Firestore document id.
+ */
+export function pathParam(req: Request, name: string): string {
+  const value = req.params[name];
+  if (typeof value === 'string' && value.length > 0 && value.length <= 200) return value;
+  throw new AppError(ERROR_CODES.VALIDATION_FAILED, {
+    fields: { [name]: 'Missing or invalid identifier' },
+    detail: `route param "${name}" was ${JSON.stringify(value)}`,
+  });
+}

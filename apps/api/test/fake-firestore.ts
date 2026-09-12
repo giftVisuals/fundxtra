@@ -134,9 +134,17 @@ class FakeQuery {
     return { docs, empty: docs.length === 0, size: docs.length };
   }
 
-  async count(): Promise<{ data: () => { count: number } }> {
-    const docs = this.store.query(this);
-    return { data: () => ({ count: docs.length }) };
+  /**
+   * Mirrors the real SDK shape: `count()` returns an AggregateQuery that must
+   * be `.get()`-ed, and the snapshot exposes `.data().count`.
+   */
+  count(): { get: () => Promise<{ data: () => { count: number } }> } {
+    return {
+      get: async () => {
+        const docs = this.store.query(this);
+        return { data: () => ({ count: docs.length }) };
+      },
+    };
   }
 }
 

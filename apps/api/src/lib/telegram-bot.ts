@@ -1,0 +1,250 @@
+import { env, hasTelegram } from '../config/env';
+import { logger } from './logger';
+
+/**
+ * Telegram Bot API client.
+ *
+ * Only documented methods are used, and only for what they actually support:
+ *
+ * - `getChatMember`  — reads a user's membership status in a chat.
+ * - `getChat`        — resolves a chat and reveals whether we can see it at all.
+ * - `getMe`          — startup sanity check.
+ * - `sendMessage`    — optional notifications.
+ *
+ * Nothing here is invented. Where Telegram cannot answer a question (for
+ * example, whether someone watched a video), the platform uses screenshot
+ * review instead of pretending otherwise.
+ */
+
+const API_ROOT = 'https://api.telegram.org';
+const REQUEST_TIMEOUT_MS = 8_000;
+
+export type ChatMemberStatus =
+  | 'creator'
+  | 'administrator'
+  | 'member'
+  | 'restricted'
+  | 'left'
+  | 'kicked';
+
+/** Statuses that count as "in the chat" for task verification. */
+const JOINED_STATUSES: readonly ChatMemberStatus[] = ['creator', 'administrator', 'member'];
+
+export interface TelegramApiResult<T> {
+  ok: boolean;
+  result?: T;
+  error_code?: number;
+  description?: string;
+}
+
+export class TelegramApiError extends Error {
+  constructor(
+    readonly method: string,
+    readonly errorCode: number | null,
+    readonly description: string,
+  ) {
+    super(`Telegram ${method} failed (${errorCode ?? 'network'}): ${description}`);
+    this.name = 'TelegramApiError';
+  }
+}
+
+async function call<T>(method: string, payload: Record<string, unknown>): Promise<T> {
+  if (!hasTelegram) {
+    throw new TelegramApiError(method, null, 'TELEGRAM_BOT_TOKEN is not configured');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${API_ROOT}/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    const body = (await response.json()) as TelegramApiResult<T>;
+    if (!body.ok || body.result === undefined) {
+      throw new TelegramApiError(
+        method,
+        body.error_code ?? response.status,
+        body.description ?? 'Unknown Telegram API error',
+      );
+    }
+    return body.result;
+  } catch (error) {
+    if (error instanceof TelegramApiError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new TelegramApiError(method, null, 'Request to Telegram timed out');
+    }
+    throw new TelegramApiError(
+      method,
+      null,
+      error instanceof Error ? error.message : 'Network failure',
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export interface ChatMember {
+  status: ChatMemberStatus;
+  user: { id: number; username?: string; first_name: string };
+}
+
+export type MembershipOutcome =
+  | { state: 'JOINED'; status: ChatMemberStatus }
+  | { state: 'NOT_JOINED'; status: ChatMemberStatus }
+  | { state: 'CONFIGURATION_ERROR'; adminMessage: string }
+  | { state: 'UNAVAILABLE'; adminMessage: string };
+
+/**
+ * Check whether a user is in a chat.
+ *
+ * The three failure modes are kept distinct because they need different
+ * handling, and collapsing them is how a verification system ends up either
+ * blocking legitimate users or paying out on a misconfiguration:
+ *
+ * - NOT_JOINED           the user genuinely has not joined. Tell the user.
+ * - CONFIGURATION_ERROR  the bot cannot see the chat's members. Tell the admin,
+ *                        and never credit the reward.
+ * - UNAVAILABLE          Telegram is unreachable. Ask the user to retry.
+ */
+export async function checkChatMembership(
+  chatId: string,
+  telegramUserId: string,
+): Promise<MembershipOutcome> {
+  try {
+    const member = await call<ChatMember>('getChatMember', {
+      chat_id: normaliseChatId(chatId),
+      user_id: Number.parseInt(telegramUserId, 10),
+    });
+
+    return JOINED_STATUSES.includes(member.status)
+      ? { state: 'JOINED', status: member.status }
+      : { state: 'NOT_JOINED', status: member.status };
+  } catch (error) {
+    if (!(error instanceof TelegramApiError)) {
+      return { state: 'UNAVAILABLE', adminMessage: 'Unexpected verification failure' };
+    }
+
+    const description = error.description.toLowerCase();
+
+    // "user not found" / "participant id invalid" means the user is not in the
+    // chat, which is a legitimate negative rather than a configuration fault.
+    if (description.includes('user not found') || description.includes('participant_id_invalid')) {
+      return { state: 'NOT_JOINED', status: 'left' };
+    }
+
+    if (
+      description.includes('chat not found') ||
+      description.includes('member list is inaccessible') ||
+      description.includes('not enough rights') ||
+      description.includes('bot is not a member') ||
+      description.includes('forbidden')
+    ) {
+      logger.error(
+        { chatId, description: error.description },
+        'Telegram verification is misconfigured for this chat',
+      );
+      return {
+        state: 'CONFIGURATION_ERROR',
+        adminMessage: configurationAdvice(error.description),
+      };
+    }
+
+    logger.warn({ chatId, err: error }, 'Telegram membership check unavailable');
+    return { state: 'UNAVAILABLE', adminMessage: error.description };
+  }
+}
+
+/** Actionable guidance for the admin, derived from Telegram's own description. */
+function configurationAdvice(description: string): string {
+  const text = description.toLowerCase();
+  if (text.includes('chat not found')) {
+    return 'Telegram cannot find this chat. Check the @username or numeric id, and make sure the Fundxtra bot has been added to it.';
+  }
+  if (text.includes('member list is inaccessible')) {
+    return 'The Fundxtra bot must be an administrator of this chat to read its member list. Promote the bot, then retry.';
+  }
+  if (text.includes('not enough rights')) {
+    return 'The Fundxtra bot lacks the rights to verify members here. Promote it to administrator.';
+  }
+  return `Telegram refused the membership check: ${description}`;
+}
+
+/**
+ * Confirm at task-creation time that verification will actually work, so an
+ * admin finds out immediately rather than through a wave of failed completions.
+ */
+export async function probeChatAccess(chatId: string): Promise<{
+  ok: boolean;
+  title: string | null;
+  warning: string | null;
+}> {
+  try {
+    const chat = await call<{ id: number; title?: string; username?: string; type: string }>(
+      'getChat',
+      { chat_id: normaliseChatId(chatId) },
+    );
+
+    // Seeing the chat is not the same as being able to read its members: the
+    // bot needs administrator rights for that in channels and large groups.
+    const administrators = await call<Array<{ user: { id: number; is_bot: boolean } }>>(
+      'getChatAdministrators',
+      { chat_id: normaliseChatId(chatId) },
+    ).catch(() => null);
+
+    const me = await call<{ id: number }>('getMe', {}).catch(() => null);
+    const botIsAdmin =
+      administrators && me
+        ? administrators.some((entry) => entry.user.id === me.id)
+        : false;
+
+    return {
+      ok: true,
+      title: chat.title ?? chat.username ?? null,
+      warning: botIsAdmin
+        ? null
+        : 'The Fundxtra bot is not an administrator of this chat. Automatic membership verification will fail until it is promoted.',
+    };
+  } catch (error) {
+    const description =
+      error instanceof TelegramApiError ? error.description : 'Verification probe failed';
+    return { ok: false, title: null, warning: configurationAdvice(description) };
+  }
+}
+
+/** `@name` or a numeric `-100…` id, in the form the Bot API expects. */
+function normaliseChatId(chatId: string): string | number {
+  const trimmed = chatId.trim();
+  if (/^-?\d+$/.test(trimmed)) return Number.parseInt(trimmed, 10);
+  return trimmed.startsWith('@') ? trimmed : `@${trimmed}`;
+}
+
+export async function getBotIdentity(): Promise<{ id: number; username: string } | null> {
+  try {
+    const me = await call<{ id: number; username: string }>('getMe', {});
+    return me;
+  } catch (error) {
+    logger.warn({ err: error }, 'Could not read the bot identity');
+    return null;
+  }
+}
+
+/** Optional notification. Failure is logged and swallowed: never block a reward. */
+export async function notifyUser(telegramId: string, text: string): Promise<boolean> {
+  try {
+    await call('sendMessage', {
+      chat_id: Number.parseInt(telegramId, 10),
+      text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    });
+    return true;
+  } catch (error) {
+    logger.info({ telegramId, err: error }, 'Could not notify the user on Telegram');
+    return false;
+  }
+}
