@@ -3,57 +3,36 @@ rules_version = '2';
 /**
  * Fundxtra Firestore security rules.
  *
- * The governing decision: **no client writes, anywhere.** Every mutation goes
- * through the API, which holds Admin SDK credentials and therefore bypasses
- * these rules entirely. That is deliberate, and it is what lets the backend
- * guarantee things rules cannot express — that a reward credit and its ledger
- * row commit atomically, that an idempotency key makes a retry safe, that a
- * campaign cannot overspend its budget, that a PIN attempt is rate limited.
+ * **No client access, anywhere. Not reads, not writes, not authenticated, not
+ * anonymous.** Every read and every mutation goes through the API, which holds
+ * Admin SDK credentials and therefore bypasses these rules entirely.
  *
- * A rule like "a user may update their own document" would quietly undo all of
- * that: it would let a client set its own `balanceKobo`.
+ * That is deliberate, and it is what lets the backend guarantee things rules
+ * cannot express — that a reward credit and its ledger row commit atomically,
+ * that an idempotency key makes a retry safe, that a campaign cannot overspend
+ * its budget, that a PIN attempt is rate limited, that a caller only ever sees
+ * their own data. A rule as innocuous as "a user may update their own
+ * document" would quietly undo all of it: it would let a client set its own
+ * `balanceKobo`.
  *
- * Reads are equally locked down, with two narrow exceptions for the public
- * marketing site, which uses the Firebase Web SDK to show live statistics:
+ * This file previously carried two narrow public-read exceptions, for platform
+ * statistics and published announcements, because the marketing site read them
+ * with the Firebase Web SDK. It no longer does — the site fetches both from the
+ * API — so the exceptions were removed rather than left standing unused. An
+ * unused hole in a ruleset is still a hole, and a public `list` on
+ * `announcements` in particular let anyone enumerate that collection.
  *
- *   - `counters/publicStats` — aggregate totals only, no user data.
- *   - `announcements` where the audience is PUBLIC or BOTH and it is published.
+ * PIN hashes deserve a specific mention: `pins/{userId}` is denied here like
+ * everything else, and it lives in a collection separate from `users`
+ * precisely so that no query or export over user profiles can ever carry PIN
+ * material with it.
  *
- * Everything else — users, PIN hashes, transactions, withdrawals, submissions,
- * admins, audit logs — is unreachable from any client, authenticated or not.
- * The Mini App reads all of it through the API, where the caller's identity is
- * verified and the response is filtered to what that caller may see.
+ * Deploy with:
+ *   firebase deploy --project fundxtra --only firestore:rules
+ * or paste this file into Firebase console -> Firestore -> Rules -> Publish.
  */
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // ---------------------------------------------------------------------
-    // Public read surface for the marketing site.
-    // ---------------------------------------------------------------------
-
-    // Aggregate platform statistics. Contains counts and totals only.
-    match /counters/publicStats {
-      allow get: if true;
-      allow list, write: if false;
-    }
-
-    // Published announcements intended for the public site. The audience and
-    // published checks are in the rule itself, so an APP-only announcement
-    // cannot be read from the website even if a client asks for it directly.
-    match /announcements/{announcementId} {
-      allow get, list: if resource.data.published == true
-                       && resource.data.audience in ['PUBLIC', 'BOTH'];
-      allow write: if false;
-    }
-
-    // ---------------------------------------------------------------------
-    // Everything else: no client access at all.
-    //
-    // PIN hashes deserve a specific mention: `pins/{userId}` is denied here
-    // like everything else, and it is a separate collection from `users`
-    // precisely so that no query or export over user profiles can ever carry
-    // PIN material with it.
-    // ---------------------------------------------------------------------
     match /{document=**} {
       allow read, write: if false;
     }
