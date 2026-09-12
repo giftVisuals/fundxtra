@@ -146,8 +146,24 @@ precisely so a restart or a redeploy cannot hand an attacker fresh attempts.
 
 ## 4. Vercel (the frontend)
 
-Import the repository. `vercel.json` sets the build command, output directory
-and headers.
+Import the repository. Vercel hosts **only the frontend** (`apps/web`); the API
+lives on Railway. Leave **Root Directory** at the repository root and the preset
+at **Next.js** — `vercel.json` is at the root and already points the build at
+`apps/web`. Pointing a Vercel project at `apps/api` with the Express preset
+cannot work: the API is a long-running Express server with in-process rate
+limiting, not a set of serverless functions.
+
+`vercel.json` sets the build command, output directory and headers. Note that
+none of its objects may carry extra keys — Vercel validates the file against a
+strict schema and rejects an unknown property (including a `comment` key used
+to annotate a header) with `Invalid request: ... should NOT have additional
+property`. Explanations therefore live here rather than in the file.
+
+`/app` and `/admin` are served with `Content-Security-Policy: frame-ancestors`
+limited to Telegram's own origins rather than `X-Frame-Options: DENY`, because
+the Mini App is loaded inside a Telegram WebView and must be framable by
+Telegram — and by nothing else. Both the exact paths and their subtrees are
+listed, so a future nested route cannot quietly ship without the header.
 
 ### Variables
 

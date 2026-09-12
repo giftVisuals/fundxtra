@@ -9,7 +9,16 @@
       "source": "/app",
       "headers": [
         {
-          "comment": "The Mini App is framed by Telegram, so it must NOT be X-Frame-Options: DENY. Telegram's own clients are the only frame-ancestors it needs.",
+          "key": "Content-Security-Policy",
+          "value": "frame-ancestors https://web.telegram.org https://*.telegram.org https://telegram.org;"
+        },
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
+      ]
+    },
+    {
+      "source": "/app/(.*)",
+      "headers": [
+        {
           "key": "Content-Security-Policy",
           "value": "frame-ancestors https://web.telegram.org https://*.telegram.org https://telegram.org;"
         },
@@ -18,6 +27,16 @@
     },
     {
       "source": "/admin",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "frame-ancestors https://web.telegram.org https://*.telegram.org https://telegram.org;"
+        },
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow" }
+      ]
+    },
+    {
+      "source": "/admin/(.*)",
       "headers": [
         {
           "key": "Content-Security-Policy",
