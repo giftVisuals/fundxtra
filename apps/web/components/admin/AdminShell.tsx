@@ -12,6 +12,7 @@ import { WithdrawalsView } from './WithdrawalsView';
 import { TasksView } from './TasksView';
 import { SettingsView } from './SettingsView';
 import { AdminsView } from './AdminsView';
+import { AnnouncementsView } from './AnnouncementsView';
 import { AuditView } from './AuditView';
 
 /**
@@ -34,6 +35,7 @@ type ViewId =
   | 'withdrawals'
   | 'tasks'
   | 'settings'
+  | 'announcements'
   | 'admins'
   | 'audit';
 
@@ -97,6 +99,7 @@ export function AdminShell() {
       badge: data.stats.finance.pendingWithdrawalCount,
     },
     { id: 'tasks', label: 'Campaigns', permission: 'tasks:manage' },
+    { id: 'announcements', label: 'Announcements', permission: 'announcements:manage' },
     { id: 'settings', label: 'Settings', permission: 'settings:manage' },
     { id: 'admins', label: 'Admins', permission: 'admins:manage' },
     { id: 'audit', label: 'Audit log', permission: 'audit:view' },
@@ -311,6 +314,7 @@ export function AdminShell() {
           {view === 'submissions' && <SubmissionsView />}
           {view === 'withdrawals' && <WithdrawalsView />}
           {view === 'tasks' && <TasksView />}
+          {view === 'announcements' && <AnnouncementsView />}
           {view === 'settings' && <SettingsView />}
           {view === 'admins' && <AdminsView />}
           {view === 'audit' && <AuditView />}

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  NETWORKS,
   NIGERIAN_BANKS,
   REWARD_KIND_LABELS,
   TRANSACTION_LABELS,
@@ -9,8 +10,11 @@ import {
   formatNaira,
   maskAccountNumber,
   parseNairaInput,
+  phoneSchema,
   relativeTime,
+  telegramUsernameSchema,
   tokens,
+  type Network,
   type RewardKind,
   type RewardProduct,
   type TransactionRow,
@@ -69,6 +73,15 @@ export function WalletPanel() {
   const [withdrawals, setWithdrawals] = useState<Withdrawal[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<'withdraw' | 'rewards' | null>(null);
+  /*
+    The chosen reward lives here, not inside RewardsSheet, because sheets must
+    not nest: framer-motion puts a transform on the open sheet, and a
+    `position: fixed` descendant of a transformed element positions against
+    that element rather than the viewport — so a nested sheet floats in the
+    middle of its parent instead of sitting at the bottom of the screen.
+    One sheet at a time is also the better interaction.
+  */
+  const [redeeming, setRedeeming] = useState<RewardProduct | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -224,8 +237,22 @@ export function WalletPanel() {
         open={sheet === 'rewards'}
         onClose={() => setSheet(null)}
         balanceKobo={wallet.balanceKobo}
-        onDone={afterMoneyMoved}
+        onSelect={(product) => {
+          setSheet(null);
+          setRedeeming(product);
+        }}
       />
+
+      {/* Keyed per product so each redemption starts from a clean form. */}
+      {redeeming && (
+        <RedeemSheet
+          key={redeeming.id}
+          product={redeeming}
+          balanceKobo={wallet.balanceKobo}
+          onClose={() => setRedeeming(null)}
+          onDone={afterMoneyMoved}
+        />
+      )}
     </div>
   );
 }
@@ -545,12 +572,12 @@ function RewardsSheet({
   open,
   onClose,
   balanceKobo,
-  onDone,
+  onSelect,
 }: {
   open: boolean;
   onClose: () => void;
   balanceKobo: number;
-  onDone: (balanceAfterKobo?: number) => Promise<void>;
+  onSelect: (product: RewardProduct) => void;
 }) {
   const [catalogue, setCatalogue] = useState<{
     products: RewardProduct[];
@@ -663,15 +690,7 @@ function RewardsSheet({
                     </div>
                   }
                   {...(product.available && affordable
-                    ? {
-                        onClick: () => {
-                          // Redemption flow proper is wired per reward kind;
-                          // support is the honest fallback until a provider
-                          // exists to deliver against.
-                          openExternal(supportUrl);
-                          void onDone();
-                        },
-                      }
+                    ? { onClick: () => onSelect(product) }
                     : {})}
                 />
               );
@@ -679,6 +698,259 @@ function RewardsSheet({
           </div>
         </div>
       ))}
+
+    </Sheet>
+  );
+}
+
+/**
+ * Redemption confirmation.
+ *
+ * The destination differs by reward kind — a phone number for airtime and
+ * data, a Telegram username for Stars and Premium — and each is validated
+ * with the same schema the API uses, so the client cannot accept something
+ * the server will reject.
+ *
+ * The PIN is entered here and sent in the request. A PIN-verified session is
+ * not enough on its own: it proves the app was unlocked at some point, while
+ * the body PIN proves the person authorising this specific payment is present.
+ */
+function RedeemSheet({
+  product,
+  balanceKobo,
+  onClose,
+  onDone,
+}: {
+  product: RewardProduct;
+  balanceKobo: number;
+  onClose: () => void;
+  onDone: (balanceAfterKobo?: number) => Promise<void>;
+}) {
+  const needsPhone = product.kind === 'AIRTIME' || product.kind === 'DATA';
+  const [target, setTarget] = useState('');
+  const [network, setNetwork] = useState<Network>('MTN');
+  const [amount, setAmount] = useState('');
+  const [pin, setPin] = useState('');
+  const [step, setStep] = useState<'details' | 'pin' | 'done'>('details');
+  const [submitting, setSubmitting] = useState(false);
+  const [failure, setFailure] = useState<{ message: string; requestId?: string } | null>(null);
+  const [outcome, setOutcome] = useState<{ status: string; message: string } | null>(null);
+
+  // Airtime with no fixed product is an open amount the user chooses.
+  const openAmount = product.kind === 'AIRTIME' && product.openAmount;
+  const amountKobo = openAmount ? parseNairaInput(amount) : product.priceKobo;
+
+  const targetValid = needsPhone
+    ? phoneSchema.safeParse(target).success
+    : telegramUsernameSchema.safeParse(target).success;
+
+  const detailsValid =
+    targetValid &&
+    amountKobo !== null &&
+    amountKobo > 0 &&
+    amountKobo <= balanceKobo;
+
+  const submit = useCallback(async () => {
+    if (amountKobo === null) return;
+    setSubmitting(true);
+    setFailure(null);
+    try {
+      const path =
+        product.kind === 'AIRTIME'
+          ? '/wallet/rewards/airtime'
+          : product.kind === 'DATA'
+            ? '/wallet/rewards/data'
+            : product.kind === 'TELEGRAM_STARS'
+              ? '/wallet/rewards/stars'
+              : '/wallet/rewards/premium';
+
+      const body =
+        product.kind === 'AIRTIME'
+          ? { network, phone: target, amountKobo, pin }
+          : product.kind === 'DATA'
+            ? { productId: product.id, phone: target, pin }
+            : { productId: product.id, telegramUsername: target, pin };
+
+      const result = await api.post<{
+        status: string;
+        message: string;
+        balanceAfterKobo: number;
+      }>(path, body);
+
+      haptic.success();
+      setOutcome({ status: result.status, message: result.message });
+      setStep('done');
+      await onDone(result.balanceAfterKobo);
+    } catch (caught) {
+      haptic.error();
+      setFailure({
+        message: errorMessage(caught),
+        ...(errorRequestId(caught) ? { requestId: errorRequestId(caught) } : {}),
+      });
+      setPin('');
+    } finally {
+      setSubmitting(false);
+    }
+  }, [amountKobo, product, network, target, pin, onDone]);
+
+  return (
+    <Sheet
+      open
+      onClose={onClose}
+      title={product.name}
+      dismissible={!submitting}
+      footer={
+        step === 'done' ? (
+          <Button fullWidth size="lg" onClick={onClose}>
+            Done
+          </Button>
+        ) : step === 'details' ? (
+          <Button fullWidth size="lg" disabled={!detailsValid} onClick={() => setStep('pin')}>
+            Continue
+          </Button>
+        ) : (
+          <Button
+            fullWidth
+            size="lg"
+            loading={submitting}
+            disabled={pin.length !== 4 || submitting}
+            onClick={() => void submit()}
+          >
+            Confirm {formatNaira(amountKobo ?? 0)}
+          </Button>
+        )
+      }
+    >
+      {step === 'done' && outcome && (
+        <SuccessState
+          title={outcome.status === 'COMPLETED' ? 'Delivered' : 'Being processed'}
+          message={outcome.message}
+        />
+      )}
+
+      {step === 'pin' && (
+        <div>
+          <Card padding={14} tone="brand" style={{ marginBottom: 24 }}>
+            <div style={{ display: 'grid', gap: 6, fontSize: tokens.typography.size.sm }}>
+              <SummaryLine label="Reward" value={product.name} />
+              <SummaryLine label="Cost" value={formatNaira(amountKobo ?? 0)} strong />
+              <SummaryLine label={needsPhone ? 'Phone' : 'Telegram'} value={target} />
+              {product.kind === 'AIRTIME' && <SummaryLine label="Network" value={network} />}
+            </div>
+          </Card>
+
+          <PinInput
+            value={pin}
+            onChange={setPin}
+            label="Enter your PIN to approve"
+            error={failure?.message}
+            disabled={submitting}
+            autoFocus
+          />
+
+          <button
+            type="button"
+            onClick={() => setStep('details')}
+            style={{
+              display: 'block',
+              margin: '20px auto 0',
+              background: 'none',
+              border: 'none',
+              fontSize: tokens.typography.size.sm,
+              color: tokens.semantic.inkMuted,
+              textDecoration: 'underline',
+              textUnderlineOffset: 3,
+            }}
+          >
+            Change the details
+          </button>
+        </div>
+      )}
+
+      {step === 'details' && (
+        <div style={{ display: 'grid', gap: 16 }}>
+          <Card padding={14} tone="brand">
+            <div style={{ display: 'grid', gap: 6, fontSize: tokens.typography.size.sm }}>
+              <SummaryLine
+                label="Cost"
+                value={openAmount ? 'You choose' : formatNaira(product.priceKobo)}
+                strong
+              />
+              <SummaryLine label="Your balance" value={formatNaira(balanceKobo)} />
+            </div>
+          </Card>
+
+          {product.kind === 'AIRTIME' && (
+            <Field label="Network">
+              <select
+                value={network}
+                onChange={(event) => setNetwork(event.target.value as Network)}
+                style={inputStyle}
+              >
+                {NETWORKS.map((entry) => (
+                  <option key={entry} value={entry}>
+                    {entry}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+
+          {openAmount && (
+            <Field
+              label="Amount"
+              hint={`Up to ${formatNaira(balanceKobo)}`}
+              error={
+                amount.length > 0 && amountKobo === null
+                  ? 'Enter a valid amount'
+                  : amountKobo !== null && amountKobo > balanceKobo
+                    ? 'That is more than your balance'
+                    : undefined
+              }
+            >
+              <input
+                inputMode="decimal"
+                value={amount}
+                onChange={(event) => setAmount(event.target.value)}
+                placeholder="500"
+                style={inputStyle}
+              />
+            </Field>
+          )}
+
+          <Field
+            label={needsPhone ? 'Phone number' : 'Telegram username'}
+            hint={
+              needsPhone
+                ? 'The number to top up, e.g. 08031234567'
+                : 'The account to deliver to, without the @'
+            }
+            error={
+              target.length > 3 && !targetValid
+                ? needsPhone
+                  ? 'Enter a valid Nigerian phone number'
+                  : 'Enter a valid Telegram username'
+                : undefined
+            }
+          >
+            <input
+              inputMode={needsPhone ? 'tel' : 'text'}
+              value={target}
+              onChange={(event) => setTarget(event.target.value.replace(/^@/, ''))}
+              placeholder={needsPhone ? '08031234567' : 'giftvisuals'}
+              style={inputStyle}
+            />
+          </Field>
+
+          {failure && (
+            <ErrorState
+              message={failure.message}
+              requestId={failure.requestId}
+              supportUrl={supportUrl}
+            />
+          )}
+        </div>
+      )}
     </Sheet>
   );
 }

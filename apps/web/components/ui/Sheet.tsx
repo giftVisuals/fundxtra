@@ -1,7 +1,8 @@
 'use client';
 
 import { AnimatePresence, motion, useReducedMotion, type PanInfo } from 'framer-motion';
-import { useCallback, useEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { tokens } from '@fundxtra/shared';
 
 /**
@@ -11,6 +12,14 @@ import { tokens } from '@fundxtra/shared';
  * interaction happens at the bottom of a phone, where the thumb already is, and
  * because a sheet can be dismissed by dragging — which is what users expect
  * from a native app.
+ *
+ * Rendered through a **portal to `document.body`**, which is load-bearing
+ * rather than stylistic. Sheets are opened from inside the swipeable panel
+ * container, and framer-motion puts a transform on that container — which
+ * makes it the containing block for `position: fixed` descendants. Without the
+ * portal, a sheet is positioned against the panel instead of the viewport, so
+ * it floats mid-screen on a short page and disappears below the fold on a long
+ * one. The portal escapes every transformed ancestor.
  *
  * Accessibility details that are easy to skip and matter a lot here:
  *   - Focus moves into the sheet on open and returns to the trigger on close.
@@ -112,7 +121,17 @@ export function Sheet({
     [dismissible, onClose],
   );
 
-  return (
+  /*
+    The portal target only exists in the browser, so it is resolved after
+    mount — rendering `createPortal` during SSR would reference a document
+    that is not there.
+  */
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setPortalTarget(document.body);
+  }, []);
+
+  const sheet = (
     <AnimatePresence>
       {open && (
         <div
@@ -270,6 +289,11 @@ export function Sheet({
       )}
     </AnimatePresence>
   );
+
+  // Before the portal target resolves there is nothing to render into; the
+  // sheet mounts a frame later, which is imperceptible and avoids an SSR
+  // mismatch.
+  return portalTarget ? createPortal(sheet, portalTarget) : null;
 }
 
 const FOCUSABLE =
