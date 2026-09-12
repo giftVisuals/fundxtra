@@ -1,0 +1,111 @@
+import type { NextFunction, Request, Response } from 'express';
+import { ZodError } from 'zod';
+import { ERROR_CODES, ERROR_MESSAGES, GENERIC_ERROR_MESSAGE, type ApiFailure } from '@fundxtra/shared';
+import { AppError, isAppError } from '../lib/errors';
+import { MoneyError } from '@fundxtra/shared';
+import { isProduction } from '../config/env';
+
+/**
+ * The single error boundary.
+ *
+ * Users get the stable, friendly copy from the shared error table plus a
+ * request id they can quote to support. Diagnostics go to the log. `detail` is
+ * attached to the response only for authenticated admins, which is what lets
+ * operators troubleshoot without turning every user-facing error into a stack
+ * trace.
+ */
+export function errorHandler(
+  error: unknown,
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  if (res.headersSent) {
+    next(error);
+    return;
+  }
+
+  const appError = normalise(error);
+  const isServerError = appError.status >= 500;
+
+  req.log[isServerError ? 'error' : 'warn'](
+    {
+      err: error instanceof Error ? { message: error.message, stack: error.stack } : error,
+      code: appError.code,
+      status: appError.status,
+      detail: appError.detail,
+      userId: req.user?.id,
+      path: req.originalUrl.split('?')[0],
+    },
+    isServerError ? 'Unhandled request failure' : 'Request rejected',
+  );
+
+  const body: ApiFailure = {
+    ok: false,
+    error: {
+      code: appError.code,
+      message: appError.message,
+      requestId: req.requestId,
+    },
+  };
+  if (appError.fields) body.error.fields = appError.fields;
+
+  // Admins (and local development) get the diagnostic detail; users never do.
+  if (appError.detail && (req.admin || !isProduction)) {
+    (body.error as Record<string, unknown>).detail = appError.detail;
+  }
+
+  res.status(appError.status).json(body);
+}
+
+function normalise(error: unknown): AppError {
+  if (isAppError(error)) return error;
+
+  if (error instanceof ZodError) {
+    const fields: Record<string, string> = {};
+    for (const issue of error.issues) {
+      const path = issue.path.join('.') || 'value';
+      if (!fields[path]) fields[path] = issue.message;
+    }
+    return new AppError(ERROR_CODES.VALIDATION_FAILED, { fields, detail: error.message });
+  }
+
+  if (error instanceof MoneyError) {
+    return new AppError(ERROR_CODES.VALIDATION_FAILED, {
+      detail: `Money validation failed: ${error.message}`,
+    });
+  }
+
+  // Firestore surfaces numeric gRPC codes; map the ones we can act on.
+  const code = (error as { code?: number | string }).code;
+  if (code === 6) {
+    return new AppError(ERROR_CODES.DUPLICATE_REQUEST, { detail: 'Firestore ALREADY_EXISTS' });
+  }
+  if (code === 5) {
+    return new AppError(ERROR_CODES.NOT_FOUND, { detail: 'Firestore NOT_FOUND' });
+  }
+  if (code === 8 || code === 4) {
+    return new AppError(ERROR_CODES.RATE_LIMITED, {
+      detail: 'Firestore resource exhausted or deadline exceeded',
+    });
+  }
+
+  return new AppError(ERROR_CODES.INTERNAL, {
+    message: GENERIC_ERROR_MESSAGE,
+    detail: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    cause: error,
+  });
+}
+
+/** 404 handler for unmatched routes. */
+export function notFoundHandler(req: Request, res: Response): void {
+  const body: ApiFailure = {
+    ok: false,
+    error: {
+      code: ERROR_CODES.NOT_FOUND,
+      message: ERROR_MESSAGES.NOT_FOUND,
+      requestId: req.requestId,
+    },
+  };
+  res.status(404).json(body);
+}

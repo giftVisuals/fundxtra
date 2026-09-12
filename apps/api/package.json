@@ -1,0 +1,39 @@
+{
+  "name": "@fundxtra/api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "seed": "tsx src/scripts/seed.ts",
+    "bootstrap-admin": "tsx src/scripts/bootstrap-admin.ts"
+  },
+  "dependencies": {
+    "@fundxtra/shared": "*",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "firebase-admin": "^14.4.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "pino": "^9.14.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^22.19.2",
+    "@types/supertest": "^6.0.3",
+    "supertest": "^7.1.4",
+    "tsx": "^4.20.7",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
