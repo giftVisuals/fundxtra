@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /app
+Disallow: /admin
+
+Sitemap: https://fundxtra.name.ng/sitemap.xml

@@ -90,21 +90,25 @@ export const semantic = {
  */
 export const glass = {
   /** Base translucent fill of a glass surface. */
-  fill: 'rgba(255, 255, 255, 0.62)',
-  /** Slightly denser fill for the nav bar, which sits over scrolling content. */
-  fillStrong: 'rgba(255, 255, 255, 0.72)',
+  fill: 'rgba(255, 255, 255, 0.58)',
+  /**
+   * Fill for the nav bar. Denser than the base because the bar sits over
+   * scrolling body text: below roughly 0.7 the text behind stays legible
+   * through the blur, which reads as a transparent box rather than glass.
+   */
+  fillStrong: 'rgba(255, 255, 255, 0.76)',
   /** Warm tint layered under the fill so the glass picks up the brand. */
-  tint: 'rgba(150, 96, 61, 0.055)',
+  tint: 'rgba(150, 96, 61, 0.07)',
   /** The morphing active-tab pill. */
-  pill: 'rgba(255, 255, 255, 0.88)',
+  pill: 'rgba(255, 255, 255, 0.92)',
   /** Hairline edge. Light, never a glowing border. */
   edge: 'rgba(255, 255, 255, 0.85)',
   edgeShadow: 'rgba(100, 58, 34, 0.10)',
   /** Specular highlight sweeping the top edge. */
   specular: 'rgba(255, 255, 255, 0.95)',
-  blur: '20px',
-  blurStrong: '28px',
-  saturate: '180%',
+  blur: '24px',
+  blurStrong: '30px',
+  saturate: '185%',
   shadow: '0 1px 2px rgba(80, 47, 30, 0.05), 0 8px 24px -8px rgba(80, 47, 30, 0.14), 0 20px 48px -24px rgba(80, 47, 30, 0.18)',
   shadowPill: '0 1px 1px rgba(255,255,255,0.9) inset, 0 -1px 2px rgba(123,72,41,0.06) inset, 0 4px 12px -4px rgba(80, 47, 30, 0.18)',
 } as const;
@@ -234,6 +238,24 @@ export function toCssVariables(): Record<string, string> {
 
 function kebab(value: string): string {
   return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+}
+
+/**
+ * Render every token as a `:root` stylesheet.
+ *
+ * Returned as a string so the web app can inline it in `<head>` rather than
+ * importing a generated `.css` file. That choice is deliberate: Tailwind v4
+ * prunes custom properties it does not see referenced in a stylesheet it
+ * processes, which silently dropped two thirds of these tokens — including the
+ * glass blur and fill, leaving the navigation as a transparent box with no
+ * blur at all. Inlining keeps the tokens outside any optimiser's reach, and
+ * as a bonus removes a render-blocking request and the flash it caused.
+ */
+export function tokenStylesheet(): string {
+  const declarations = Object.entries(toCssVariables())
+    .map(([name, value]) => `${name}:${value}`)
+    .join(';');
+  return `:root{${declarations}}`;
 }
 
 export const tokens = {

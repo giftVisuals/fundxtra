@@ -8,6 +8,7 @@ import { accessLog, requestContext } from './middleware/context';
 import { errorHandler, notFoundHandler } from './middleware/error';
 import { rateLimit } from './middleware/rate-limit';
 import { adminRouter } from './routes/admin';
+import { announcementsRouter } from './routes/announcements';
 import { authRouter } from './routes/auth';
 import { publicRouter } from './routes/public';
 import { referralsRouter } from './routes/referrals';
@@ -113,6 +114,7 @@ export function createApp(): Express {
   app.use(maintenanceGate);
   app.use('/tasks', tasksRouter);
   app.use('/referrals', referralsRouter);
+  app.use('/announcements', announcementsRouter);
   app.use('/wallet', walletRouter);
 
   app.use(notFoundHandler);

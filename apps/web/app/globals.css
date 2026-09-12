@@ -1,0 +1,411 @@
+@import 'tailwindcss';
+
+/*
+ * Fundxtra global styles.
+ *
+ * Every colour, space, radius and motion value comes from a `--fx-*` custom
+ * property. Those are inlined into <head> by the root layout from
+ * `tokenStylesheet()` in @fundxtra/shared — not imported here as CSS, because
+ * Tailwind v4 prunes custom properties it cannot see referenced and silently
+ * dropped most of them. Nothing below introduces a new colour.
+ */
+
+@theme inline {
+  --color-cocoa-50: var(--fx-cocoa-50);
+  --color-cocoa-100: var(--fx-cocoa-100);
+  --color-cocoa-200: var(--fx-cocoa-200);
+  --color-cocoa-300: var(--fx-cocoa-300);
+  --color-cocoa-400: var(--fx-cocoa-400);
+  --color-cocoa-500: var(--fx-cocoa-500);
+  --color-cocoa-600: var(--fx-cocoa-600);
+  --color-cocoa-700: var(--fx-cocoa-700);
+  --color-cocoa-800: var(--fx-cocoa-800);
+  --color-cocoa-900: var(--fx-cocoa-900);
+
+  --color-sand-0: var(--fx-sand-0);
+  --color-sand-25: var(--fx-sand-25);
+  --color-sand-50: var(--fx-sand-50);
+  --color-sand-100: var(--fx-sand-100);
+  --color-sand-200: var(--fx-sand-200);
+  --color-sand-300: var(--fx-sand-300);
+  --color-sand-400: var(--fx-sand-400);
+  --color-sand-500: var(--fx-sand-500);
+  --color-sand-600: var(--fx-sand-600);
+  --color-sand-700: var(--fx-sand-700);
+  --color-sand-800: var(--fx-sand-800);
+  --color-sand-900: var(--fx-sand-900);
+
+  --color-ink: var(--fx-ink);
+  --color-ink-muted: var(--fx-ink-muted);
+  --color-ink-subtle: var(--fx-ink-subtle);
+  --color-brand: var(--fx-brand);
+  --color-brand-ink: var(--fx-brand-ink);
+  --color-brand-soft: var(--fx-brand-soft);
+  --color-line: var(--fx-border);
+
+  --color-success: var(--fx-success-base);
+  --color-success-soft: var(--fx-success-soft);
+  --color-warning: var(--fx-warning-base);
+  --color-warning-soft: var(--fx-warning-soft);
+  --color-danger: var(--fx-danger-base);
+  --color-danger-soft: var(--fx-danger-soft);
+  --color-info: var(--fx-info-base);
+  --color-info-soft: var(--fx-info-soft);
+
+  --radius-xs: var(--fx-radius-xs);
+  --radius-sm: var(--fx-radius-sm);
+  --radius-md: var(--fx-radius-md);
+  --radius-lg: var(--fx-radius-lg);
+  --radius-xl: var(--fx-radius-xl);
+  --radius-2xl: var(--fx-radius-2xl);
+  --radius-pill: var(--fx-radius-pill);
+
+  --shadow-xs: var(--fx-shadow-xs);
+  --shadow-sm: var(--fx-shadow-sm);
+  --shadow-md: var(--fx-shadow-md);
+  --shadow-lg: var(--fx-shadow-lg);
+  --shadow-xl: var(--fx-shadow-xl);
+  --shadow-brand: var(--fx-shadow-brand);
+
+  --font-sans: var(--fx-font-sans);
+  --font-display: var(--fx-font-display);
+  --font-mono: var(--fx-font-mono);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  /* Telegram's WebView can otherwise rubber-band the whole document. */
+  overscroll-behavior-y: none;
+}
+
+body {
+  margin: 0;
+  background: var(--fx-bg);
+  color: var(--fx-ink);
+  font-family: var(--fx-font-sans);
+  font-size: var(--fx-text-md);
+  line-height: var(--fx-leading-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Text selection is rarely wanted in the Mini App and makes long-press
+     feel broken; it is re-enabled for real content below. */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Fundxtra is white-dominant by design: there is no dark theme. A user with a
+   dark system preference still gets the light interface, so the brand reads
+   the same everywhere — but `color-scheme` is declared so form controls and
+   scrollbars are rendered light rather than being auto-inverted. */
+:root {
+  color-scheme: light;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  font-family: var(--fx-font-display);
+  font-weight: var(--fx-weight-semibold);
+  letter-spacing: var(--fx-tracking-tight);
+  line-height: var(--fx-leading-tight);
+  color: var(--fx-ink);
+}
+
+p { margin: 0; }
+
+a {
+  color: var(--fx-brand-ink);
+  text-decoration: none;
+}
+
+button, input, textarea, select {
+  font: inherit;
+  color: inherit;
+}
+
+button { cursor: pointer; }
+
+img, svg, video { display: block; max-width: 100%; }
+
+/* Numerals in money and statistics must not shift width as they tick. */
+.fx-tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* --------------------------------------------------------------------------
+   Focus
+   A visible focus ring is non-negotiable for keyboard users on the public
+   site. `:focus-visible` keeps it off pointer interactions.
+   -------------------------------------------------------------------------- */
+:focus-visible {
+  outline: 2px solid var(--fx-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--fx-radius-xs);
+}
+
+.fx-focus-inset:focus-visible {
+  outline-offset: -2px;
+}
+
+/* --------------------------------------------------------------------------
+   Safe areas
+   The Mini App sits under Telegram's header and above the device's home
+   indicator. These are applied as padding rather than margin so backgrounds
+   still extend to the physical edges.
+   -------------------------------------------------------------------------- */
+.fx-safe-top { padding-top: env(safe-area-inset-top, 0px); }
+.fx-safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* Clearance so scrolling content ends above the floating glass tab bar. */
+.fx-tabbar-clearance {
+  padding-bottom: calc(var(--fx-tab-bar-clearance) + env(safe-area-inset-bottom, 0px));
+}
+
+/* --------------------------------------------------------------------------
+   Fluid Lucid Glass
+
+   The surface is composed of stacked layers rather than one declaration. That
+   structure exists for a specific reason:
+
+   `backdrop-filter: blur(24px) saturate(185%) url(#fx-refraction)` is INVALID
+   in Chromium — backdrop-filter does not accept an SVG url() reference — and an
+   invalid value causes the browser to drop the *entire* property. The result is
+   a bar with no blur at all: a plain translucent rectangle, which is exactly
+   what this component must not be. The refraction attempt destroyed the very
+   effect it was meant to enhance.
+
+   So the two are separated:
+     .fx-glass-layer   backdrop-filter: blur + saturate   (always applies)
+     .fx-glass-refract filter: url(#fx-refraction)        (additive, on the
+                                                           same childless layer,
+                                                           so it displaces the
+                                                           blurred backdrop
+                                                           without distorting
+                                                           the icons above it)
+
+   Layer order, bottom to top:
+     1. refraction + blur + saturation of whatever is behind
+     2. warm cocoa tint and a top-down white gradient
+     3. specular rim, masked to the edge only
+     4. content (icons, labels, the active lens)
+   -------------------------------------------------------------------------- */
+
+/* The container. Carries shape and shadow only — no filters, so nothing here
+   can invalidate the layers inside it. */
+.fx-glass {
+  position: relative;
+  isolation: isolate;
+  box-shadow: var(--fx-glass-shadow);
+}
+
+/* Layer 1: the actual glass. A childless element, which is what makes it safe
+   to apply `filter` to it. */
+.fx-glass-layer {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-color: var(--fx-glass-fill);
+  backdrop-filter: blur(var(--fx-glass-blur)) saturate(var(--fx-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--fx-glass-blur)) saturate(var(--fx-glass-saturate));
+  pointer-events: none;
+  z-index: 0;
+}
+
+.fx-glass-layer-strong {
+  background-color: var(--fx-glass-fill-strong);
+  backdrop-filter: blur(var(--fx-glass-blur-strong)) saturate(var(--fx-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--fx-glass-blur-strong)) saturate(var(--fx-glass-saturate));
+}
+
+/* Refraction. Applied as `filter` on the childless glass layer, so it bends the
+   already-blurred backdrop the way a lens would. Chromium honours this; Safari
+   and Firefox ignore the SVG reference and keep the blur, so the effect
+   degrades rather than breaking. */
+.fx-glass-refract {
+  filter: url('#fx-refraction');
+}
+
+/* Layer 2: warm tint plus a top-down highlight, so the glass belongs to the
+   brand instead of reading as neutral frosted plastic. */
+.fx-glass-tint {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.55) 0%,
+      rgba(255, 255, 255, 0.14) 45%,
+      rgba(255, 255, 255, 0) 100%
+    ),
+    var(--fx-glass-tint);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Layer 3: the specular rim. `mask` with `exclude` keeps the gradient on the
+   1px edge only, so it reads as a lit rim rather than a border drawn around a
+   box — bright along the top where light would land, warm and soft underneath. */
+.fx-glass-rim {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    175deg,
+    var(--fx-glass-specular) 0%,
+    rgba(255, 255, 255, 0.4) 26%,
+    rgba(255, 255, 255, 0.06) 58%,
+    var(--fx-glass-edge-shadow) 100%
+  );
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Content sits above every layer. */
+.fx-glass-content {
+  position: relative;
+  z-index: 3;
+}
+
+/* A simpler glass for cards and buttons, where layering markup is not worth it
+   and no refraction is wanted. */
+.fx-glass-simple {
+  background-color: var(--fx-glass-fill-strong);
+  backdrop-filter: blur(var(--fx-glass-blur)) saturate(var(--fx-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--fx-glass-blur)) saturate(var(--fx-glass-saturate));
+  box-shadow: var(--fx-glass-shadow);
+}
+
+/* Where backdrop-filter is unavailable the glass must still be readable, so it
+   falls back to a near-opaque warm white rather than staying transparent. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .fx-glass-layer {
+    background-color: rgba(255, 255, 255, 0.96);
+  }
+  .fx-glass-layer-strong {
+    background-color: rgba(255, 255, 255, 0.97);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Motion
+   Everything animated is driven by springs in JS; these are the CSS-only
+   fallbacks. All of it collapses when the user asks for reduced motion.
+   -------------------------------------------------------------------------- */
+@keyframes fx-fade-up {
+  from { opacity: 0; transform: translate3d(0, 8px, 0); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes fx-shimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+
+@keyframes fx-pop {
+  0% { transform: scale(0.94); }
+  55% { transform: scale(1.02); }
+  100% { transform: scale(1); }
+}
+
+.fx-animate-in {
+  animation: fx-fade-up var(--fx-duration-base) var(--fx-ease-out) both;
+}
+
+/* Skeleton loading. A warm shimmer, so a loading screen still looks like
+   Fundxtra rather than a generic grey placeholder. */
+.fx-skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--fx-sand-100) 25%,
+    var(--fx-cocoa-50) 50%,
+    var(--fx-sand-100) 75%
+  );
+  background-size: 200% 100%;
+  animation: fx-shimmer 1.6s linear infinite;
+  border-radius: var(--fx-radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .fx-skeleton {
+    animation: none;
+    background: var(--fx-sand-100);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Scrollbars — slim and warm, never a default blue-grey track.
+   -------------------------------------------------------------------------- */
+.fx-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--fx-sand-300) transparent;
+}
+.fx-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.fx-scroll::-webkit-scrollbar-track { background: transparent; }
+.fx-scroll::-webkit-scrollbar-thumb {
+  background: var(--fx-sand-300);
+  border-radius: var(--fx-radius-pill);
+}
+
+/* Horizontal snap rails for category chips and reward cards. */
+.fx-rail {
+  display: flex;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.fx-rail::-webkit-scrollbar { display: none; }
+.fx-rail > * { scroll-snap-align: start; }
+
+/* Screen-reader-only, for labels that must exist without being drawn. */
+.fx-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Skip link for keyboard users on the public site. */
+.fx-skip-link {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -120%);
+  z-index: 999;
+  padding: 0.625rem 1rem;
+  background: var(--fx-sand-0);
+  color: var(--fx-brand-ink);
+  border: 1px solid var(--fx-brand-border);
+  border-radius: 0 0 var(--fx-radius-md) var(--fx-radius-md);
+  box-shadow: var(--fx-shadow-md);
+  transition: transform var(--fx-duration-fast) var(--fx-ease-out);
+}
+.fx-skip-link:focus {
+  transform: translate(-50%, 0);
+}

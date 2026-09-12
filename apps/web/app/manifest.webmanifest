@@ -1,0 +1,16 @@
+{
+  "name": "Fundxtra",
+  "short_name": "Fundxtra",
+  "description": "Complete tasks. Earn rewards. Refer friends.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#96603d",
+  "orientation": "portrait-primary",
+  "lang": "en-NG",
+  "icons": [
+    { "src": "/brand/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/brand/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/brand/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
