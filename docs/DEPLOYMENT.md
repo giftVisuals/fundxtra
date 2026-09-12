@@ -181,6 +181,15 @@ at **Next.js** — `vercel.json` is at the root and already points the build at
 cannot work: the API is a long-running Express server with in-process rate
 limiting, not a set of serverless functions.
 
+`next` is pinned to an exact `16.2.12`, not a caret range. Next 16.3 uploads
+static files immutably, and Vercel's deploy step then fails *after* a completely
+successful build with `Cannot patch preview comments when immutable static file
+upload is enabled. Upgrade to next@v16.3.0-canary.32 or newer` — advice that
+cannot be followed, since 16.3.5 is already newer than the canary it names. The
+build artifacts were fine; only the upload was refused. 16.2.12 is the last
+release before that feature. Revisit the pin once Vercel and Next agree, and
+change it only after a real deploy proves the newer version uploads.
+
 Both configs install with `npm ci --include=dev`. Vercel runs the build with
 `NODE_ENV=production`, and npm then omits devDependencies — where `tailwindcss`,
 `@tailwindcss/postcss` and `typescript` live. Without the flag the install
