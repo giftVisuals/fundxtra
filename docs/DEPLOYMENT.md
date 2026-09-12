@@ -181,6 +181,15 @@ at **Next.js** — `vercel.json` is at the root and already points the build at
 cannot work: the API is a long-running Express server with in-process rate
 limiting, not a set of serverless functions.
 
+`next` is declared at the **repository root** as well as in `apps/web`, at the
+same exact version. Vercel resolves the framework from the Root Directory's
+`package.json`, and npm only hoists `next` to the root `node_modules` for a
+`^16.3.x` range — every 16.2.x specifier, caret, tilde or exact, nests it under
+`apps/web/node_modules` instead. Vercel then fails with `No Next.js version
+detected` before running the build at all. Declaring it at the root pins the
+hoist. `eslint-config-next` is held at the same version so the lint config
+matches the framework it lints.
+
 `next` is pinned to an exact `16.2.12`, not a caret range. Next 16.3 uploads
 static files immutably, and Vercel's deploy step then fails *after* a completely
 successful build with `Cannot patch preview comments when immutable static file

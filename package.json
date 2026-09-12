@@ -2,7 +2,7 @@
   "name": "fundxtra",
   "private": true,
   "version": "1.0.0",
-  "description": "Fundxtra — a Telegram-first rewards and earning platform. Complete tasks. Earn rewards. Refer friends.",
+  "description": "Fundxtra \u2014 a Telegram-first rewards and earning platform. Complete tasks. Earn rewards. Refer friends.",
   "engines": {
     "node": ">=20.11.0"
   },
@@ -24,5 +24,8 @@
   "devDependencies": {
     "playwright": "^1.63.0",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "next": "16.2.12"
   }
 }
