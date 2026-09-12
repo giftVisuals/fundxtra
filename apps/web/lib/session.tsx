@@ -58,6 +58,33 @@ interface SessionResponse extends DashboardSummary {
   pinVerified: boolean;
 }
 
+/**
+ * What a failed request should show the user.
+ *
+ * Carries the code and status alongside the message, because a failure with
+ * neither a reference nor a code is unsupportable: a platform 502 during a
+ * restart looks exactly like a real application error. The message stays
+ * human; the code is one muted line for whoever has to diagnose it.
+ */
+export interface SessionError {
+  message: string;
+  requestId?: string | undefined;
+  code?: string | undefined;
+  status?: number | undefined;
+}
+
+function describeFailure(caught: unknown, fallback: string): SessionError {
+  if (caught instanceof ApiError) {
+    return {
+      message: caught.message,
+      ...(caught.requestId ? { requestId: caught.requestId } : {}),
+      code: caught.code,
+      status: caught.status,
+    };
+  }
+  return { message: fallback };
+}
+
 export interface SessionContextValue {
   state: SessionState;
   user: UserProfile | null;
@@ -66,7 +93,7 @@ export interface SessionContextValue {
   adminRole: string | null;
   pinLocked: boolean;
   lockedUntil: string | null;
-  error: { message: string; requestId?: string | undefined } | null;
+  error: SessionError | null;
   /** Re-run the Telegram handshake from scratch. */
   reauthenticate: () => Promise<void>;
   /** Called after a PIN is created or verified, with the upgraded token. */
@@ -152,12 +179,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setState('LOCKED');
     } catch (caught) {
       setState('ERROR');
-      setError({
-        message: caught instanceof ApiError ? caught.message : 'We could not open Fundxtra.',
-        ...(caught instanceof ApiError && caught.requestId
-          ? { requestId: caught.requestId }
-          : {}),
-      });
+      setError(describeFailure(caught, 'We could not open Fundxtra.'));
     } finally {
       handshaking.current = false;
     }
@@ -172,9 +194,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         await loadDashboard();
       } catch (caught) {
         setState('ERROR');
-        setError({
-          message: caught instanceof ApiError ? caught.message : 'We could not load your dashboard.',
-        });
+        setError(describeFailure(caught, 'We could not load your dashboard.'));
       }
     },
     [loadDashboard],

@@ -168,15 +168,37 @@ export function ErrorState({
   title = 'Something went wrong',
   message = 'Please try again.',
   requestId,
+  code,
+  status,
   onRetry,
   supportUrl,
 }: {
   title?: string;
   message?: string;
   requestId?: string | undefined;
+  /** Error code from the API envelope, or NETWORK/TIMEOUT/INTERNAL locally. */
+  code?: string | undefined;
+  /** HTTP status, 0 when the request never got a response. */
+  status?: number | undefined;
   onRetry?: (() => void) | undefined;
   supportUrl?: string | undefined;
 }) {
+  /*
+    A failure with no reference is the hard one to support.
+
+    `requestId` only exists when the API's own error handler produced the
+    response. A 502 from the platform while the service restarts, or a proxy
+    error page, arrives as a non-JSON body with no reference at all — and the
+    card then showed nothing but "Something went wrong", which is
+    indistinguishable from a real application error. Showing the code and
+    status costs one muted line and turns "it just fails" into something
+    answerable.
+  */
+  const diagnostic = requestId
+    ? `Reference: ${requestId}`
+    : code || status
+      ? `Code: ${[code, status ? `HTTP ${status}` : null].filter(Boolean).join(' · ')}`
+      : null;
   return (
     <Card tone="danger" padding={20}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
@@ -213,7 +235,7 @@ export function ErrorState({
           >
             {message}
           </p>
-          {requestId && (
+          {diagnostic && (
             <p
               style={{
                 marginTop: 8,
@@ -222,7 +244,7 @@ export function ErrorState({
                 color: tokens.semantic.inkFaint,
               }}
             >
-              Reference: {requestId}
+              {diagnostic}
             </p>
           )}
           {(onRetry || supportUrl) && (

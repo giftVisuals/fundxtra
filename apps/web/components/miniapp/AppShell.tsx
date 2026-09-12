@@ -84,6 +84,8 @@ export function AppShell() {
           title="We could not open Fundxtra"
           message={session.error?.message ?? 'Please try again.'}
           requestId={session.error?.requestId}
+          code={session.error?.code}
+          status={session.error?.status}
           onRetry={() => void session.reauthenticate()}
           supportUrl={supportUrl}
         />
