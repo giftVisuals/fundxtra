@@ -159,6 +159,21 @@ precisely so a restart or a redeploy cannot hand an attacker fresh attempts.
 
 ## 4. Vercel (the frontend)
 
+Two Root Directory settings are valid, because Vercel's import wizard picks a
+folder *before* the screen that shows the framework preset, and Vercel's mobile
+dashboard hides the setting needed to change it afterwards:
+
+| Root Directory | Config used | Works |
+| --- | --- | --- |
+| *(empty — repository root)* | `vercel.json` | yes |
+| `apps/web` | `apps/web/vercel.json` | yes |
+| `apps/api` | — | **no** — that is the backend, it runs on Railway |
+
+The wizard defaults to `apps/api` (Express, alphabetically first). Both valid
+configs build the same thing; `apps/web/vercel.json` reaches back to the
+repository root to install the workspace and build `@fundxtra/shared` first.
+Keep them in step — a header added to one belongs in the other.
+
 Import the repository. Vercel hosts **only the frontend** (`apps/web`); the API
 lives on Railway. Leave **Root Directory** at the repository root and the preset
 at **Next.js** — `vercel.json` is at the root and already points the build at
