@@ -312,14 +312,51 @@ export async function listUserTransactions(
 }
 
 /** Credits timestamped today, in platform-local time. Powers "Today's earnings". */
-export async function sumTodayCredits(userId: string): Promise<{ kobo: Kobo; count: number }> {
+export interface TodayCredits {
+  kobo: Kobo | null;
+  count: number | null;
+}
+
+/**
+ * Today's credits for one user.
+ *
+ * Three filters — user, direction, and a timestamp range — which Firestore can
+ * only serve from a composite index. When that index is missing the query
+ * fails with FAILED_PRECONDITION, and this used to throw, taking the whole
+ * dashboard response down with it: the user could sign in and then saw only
+ * "Something went wrong", with a balance they could not reach.
+ *
+ * A daily summary figure is not worth that. The failure is now contained and
+ * reported as `null`, meaning "not computed", which the UI renders as a dash
+ * rather than as ₦0. The balance itself is a stored field on the user and does
+ * not depend on this query at all.
+ *
+ * The log line carries Firestore's own message, which includes a one-click URL
+ * that creates the exact index needed — the fastest way to make the figure
+ * real again.
+ */
+export async function sumTodayCredits(userId: string): Promise<TodayCredits> {
   const since = Timestamp.fromDate(startOfPlatformDay());
-  const snapshot = await db()
-    .collection(COLLECTIONS.transactions)
-    .where('userId', '==', userId)
-    .where('direction', '==', 'CREDIT')
-    .where('createdAt', '>=', since)
-    .get();
+
+  let snapshot;
+  try {
+    snapshot = await db()
+      .collection(COLLECTIONS.transactions)
+      .where('userId', '==', userId)
+      .where('direction', '==', 'CREDIT')
+      .where('createdAt', '>=', since)
+      .get();
+  } catch (error) {
+    logger.warn(
+      {
+        userId,
+        err: error instanceof Error ? error.message : error,
+        hint: 'Deploy firebase/firestore.indexes.json, or open the URL in the message above to create just this index.',
+      },
+      "Could not compute today's credits; showing it as unavailable",
+    );
+    return { kobo: null, count: null };
+  }
 
   let kobo = 0;
   let count = 0;

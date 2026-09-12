@@ -90,6 +90,39 @@ function normalise(error: unknown): AppError {
       detail: 'Firestore resource exhausted or deadline exceeded',
     });
   }
+  /*
+    The codes below used to fall through to INTERNAL, which is how a missing
+    composite index reached a user as "Something went wrong" with no way for
+    anyone — including the operator — to tell a setup gap from a bug.
+
+    Firestore's own message for code 9 contains a URL that creates the exact
+    index required, so it is kept verbatim in `detail`: that field is returned
+    only to admins and in development, and it is always logged.
+  */
+  if (code === 9) {
+    const message = error instanceof Error ? error.message : String(error);
+    // FAILED_PRECONDITION is overwhelmingly a missing index here, but not
+    // exclusively, so the distinction is made on the message rather than
+    // assumed from the code.
+    return new AppError(
+      /index/i.test(message)
+        ? ERROR_CODES.DATABASE_SETUP_REQUIRED
+        : ERROR_CODES.DATABASE_UNAVAILABLE,
+      { detail: message },
+    );
+  }
+  if (code === 7 || code === 16) {
+    return new AppError(ERROR_CODES.DATABASE_UNAVAILABLE, {
+      detail: `Firestore rejected the service credentials (gRPC ${String(code)}): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    });
+  }
+  if (code === 14) {
+    return new AppError(ERROR_CODES.DATABASE_UNAVAILABLE, {
+      detail: 'Firestore is unavailable (gRPC 14)',
+    });
+  }
 
   return new AppError(ERROR_CODES.INTERNAL, {
     message: GENERIC_ERROR_MESSAGE,

@@ -51,6 +51,10 @@ const DEFAULT_STATUS: Partial<Record<ErrorCode, number>> = {
   RATE_LIMITED: 429,
   PROVIDER_NOT_CONFIGURED: 503,
   VERIFICATION_UNAVAILABLE: 503,
+  // 503, not 500: the service is temporarily unable to answer because of its
+  // own configuration or a dependency, and the caller is right to retry.
+  DATABASE_SETUP_REQUIRED: 503,
+  DATABASE_UNAVAILABLE: 503,
   INTERNAL: 500,
 };
 

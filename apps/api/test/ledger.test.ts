@@ -329,4 +329,42 @@ describe('history', () => {
     // not inflate today's earnings either.
     expect((await sumTodayCredits('u1')).kobo).toBe(10_000);
   });
+
+  it("reports today's credits as unavailable when the query cannot be served", async () => {
+    /*
+      The three-filter query behind this figure needs a composite Firestore
+      index. Before this was contained, a missing index threw FAILED_PRECONDITION
+      out of sumTodayCredits, through buildDashboard, and reached the user as
+      "Something went wrong" — signed in, but unable to see their balance.
+
+      `null` means "not computed". It must never come back as 0, which would
+      claim the user earned nothing today.
+    */
+    seedUser('u1', 0);
+    await postEntry({
+      userId: 'u1', type: 'TASK_REWARD', amountKobo: 15_000, description: 'a', idempotencyKey: 'k1',
+    });
+
+    const failure = Object.assign(new Error('9 FAILED_PRECONDITION: The query requires an index.'), {
+      code: 9,
+    });
+    // `collection()` hands back a fresh query object each call, so the refusal
+    // has to be injected at the store, the way Firestore would refuse it.
+    const original = store.collection.bind(store);
+    store.collection = ((name: string) => {
+      const target = original(name);
+      if (name !== 'transactions') return target;
+      return { ...target, where: () => { throw failure; } };
+    }) as typeof store.collection;
+
+    try {
+      const { sumTodayCredits } = await import('../src/services/ledger');
+      const result = await sumTodayCredits('u1');
+
+      expect(result.kobo).toBeNull();
+      expect(result.count).toBeNull();
+    } finally {
+      store.collection = original;
+    }
+  });
 });

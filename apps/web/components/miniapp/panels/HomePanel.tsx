@@ -146,7 +146,19 @@ export function HomePanel({ onNavigate }: { onNavigate: (id: string) => void }) 
         }}
       >
         <Card padding={14}>
-          <StatBlock label="Today" value={formatNaira(dashboard.todayEarnedKobo)} />
+          {/*
+            A dash, not ₦0, when the figure could not be computed. Zero would
+            read as "you earned nothing today", which is a claim the server did
+            not make. The balance beside it is authoritative either way.
+          */}
+          <StatBlock
+            label="Today"
+            value={
+              dashboard.todayEarnedKobo === null
+                ? '—'
+                : formatNaira(dashboard.todayEarnedKobo)
+            }
+          />
         </Card>
         <Card padding={14}>
           <StatBlock label="Tasks" value={user.tasksCompleted.toLocaleString('en-NG')} />

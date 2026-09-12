@@ -200,6 +200,15 @@ export const ERROR_CODES = {
   LIMIT_EXCEEDED: 'LIMIT_EXCEEDED',
   PROVIDER_NOT_CONFIGURED: 'PROVIDER_NOT_CONFIGURED',
   PROVIDER_FAILED: 'PROVIDER_FAILED',
+  /**
+   * The database needs a composite index that does not exist yet. Separated
+   * from INTERNAL because it is a one-time setup step with a known fix, not a
+   * bug — and an operator who sees this code knows exactly what to do, while
+   * INTERNAL tells them nothing.
+   */
+  DATABASE_SETUP_REQUIRED: 'DATABASE_SETUP_REQUIRED',
+  /** The database rejected the server's credentials, or is unreachable. */
+  DATABASE_UNAVAILABLE: 'DATABASE_UNAVAILABLE',
   INTERNAL: 'INTERNAL',
 } as const;
 
@@ -231,6 +240,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   LIMIT_EXCEEDED: 'That is outside the allowed limits.',
   PROVIDER_NOT_CONFIGURED: 'This reward is not available yet. It is coming soon.',
   PROVIDER_FAILED: 'We could not complete that right now. Nothing was deducted.',
+  DATABASE_SETUP_REQUIRED: 'Fundxtra is finishing a one-time setup step. Please try again shortly.',
+  DATABASE_UNAVAILABLE: 'Fundxtra cannot reach its database right now. Please try again shortly.',
   INTERNAL: 'Something went wrong. Please try again.',
 };
 

@@ -88,9 +88,18 @@ export interface UserProfile {
 
 export interface DashboardSummary {
   user: UserProfile;
-  /** Sum of credits timestamped today, in the platform timezone. */
-  todayEarnedKobo: Kobo;
-  tasksCompletedToday: number;
+  /**
+   * Sum of credits timestamped today, in the platform timezone.
+   *
+   * `null` when the figure could not be computed — the query behind it needs a
+   * composite Firestore index, and until that index exists the honest answer
+   * is "unknown", not zero. Showing ₦0 for money that was in fact earned is a
+   * worse failure than showing a dash: the balance is authoritative and
+   * unaffected either way, but a zeroed daily figure reads as lost earnings.
+   */
+  todayEarnedKobo: Kobo | null;
+  /** `null` for the same reason as `todayEarnedKobo`. */
+  tasksCompletedToday: number | null;
   availableTaskCount: number;
   pendingSubmissionCount: number;
   withdrawalsOpen: boolean;
