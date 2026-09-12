@@ -77,8 +77,21 @@ console.
 
 ## 3. Railway (the API)
 
-Create a project from this repository. `railway.json` and `nixpacks.toml` set
-the build and start commands; the health check is `/health`.
+Create a project from this repository. `nixpacks.toml` owns install, build and
+start; `railway.json` sets only the builder, the health check and the restart
+policy. Do not add a `buildCommand` to `railway.json`: it replaces the build
+phase but runs *after* install, so a command beginning with `npm ci` tries to
+delete a `node_modules` that Railway has mounted as a build cache and the
+deploy fails with `EBUSY / rmdir / errno -16`.
+
+Two probes, deliberately different:
+
+- `GET /health` — liveness. Always 200 while the process is up, with
+  `ready` and `missingConfiguration` in the body. Railway's health check
+  points here, so a first deploy goes live and *tells you* what to set
+  instead of crash-looping with the answer unreachable.
+- `GET /ready` — readiness. 503 until every required secret is present. Use
+  this one for a real dependency probe.
 
 ### Variables
 
@@ -178,7 +191,8 @@ and `/admin` also carry `X-Robots-Tag: noindex`.
 
 ## 5. Verify the deployment
 
-- [ ] `GET /health` returns `ok: true` with no warnings
+- [ ] `GET /health` returns `ready: true` with no warnings
+- [ ] `GET /ready` returns 200
 - [ ] `GET /public/config` returns the brand and pricing
 - [ ] `GET /public/stats` returns `sufficientData: false` on a new platform —
       this is correct, and the site shows an early-stage state rather than

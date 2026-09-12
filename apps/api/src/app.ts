@@ -75,17 +75,41 @@ export function createApp(): Express {
   app.use(accessLog);
 
   /**
-   * Health and readiness.
+   * Liveness.
    *
    * Deliberately unauthenticated and never rate limited, so a platform probe
    * always gets an answer. It reports *which* configuration is missing, because
    * a deploy that says why it is unhealthy is far easier to fix than one that
    * only crash-loops.
+   *
+   * This answers "is the process up", so it returns 200 even before the
+   * secrets are set, with `ready: false` and the missing names in the body.
+   * That split is load-bearing on Railway: the platform healthcheck fails a
+   * deployment when the probe is not 2xx, so returning 503 for missing
+   * configuration meant a first deploy could never go live — and the operator
+   * could not reach the very response that lists what to set. Authenticated
+   * routes still refuse to run unconfigured, so nothing is served unsafely;
+   * see `/ready` for the strict check to use in a real dependency probe.
    */
   app.get('/health', (_req, res) => {
     const status = readiness();
+    res.status(200).json({
+      ok: true,
+      ready: status.ready,
+      service: 'fundxtra-api',
+      environment: env.NODE_ENV,
+      missingConfiguration: status.missing,
+      warnings: status.warnings,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  /** Strict readiness: 503 until every required secret is present. */
+  app.get('/ready', (_req, res) => {
+    const status = readiness();
     res.status(status.ready ? 200 : 503).json({
       ok: status.ready,
+      ready: status.ready,
       service: 'fundxtra-api',
       environment: env.NODE_ENV,
       missingConfiguration: status.missing,

@@ -1,5 +1,13 @@
 # Railway build configuration for the Fundxtra API.
 #
+# nixpacks.toml owns install, build and start. railway.json deliberately does
+# NOT set a buildCommand: a buildCommand *replaces* the build phase but runs
+# after the install phase has already populated /app/node_modules, so a
+# buildCommand starting with `npm ci` makes npm try to delete a directory that
+# Railway has mounted as a build cache. That fails with
+# `EBUSY / syscall rmdir / errno -16`, which is exactly what the first deploy hit.
+# Install happens once, here.
+#
 # The API is a workspace package, so the shared package must be compiled first —
 # it ships as CommonJS and the API imports its types and runtime helpers.
 #
@@ -8,6 +16,19 @@
 # apps/api/src/lib/rate-limit.ts). Scaling horizontally multiplies the effective
 # limits by the replica count. Swap MemoryRateLimiter for a Redis-backed
 # implementation of the same interface before raising it.
+
+[variables]
+# Railway sets NODE_ENV=production, and npm then skips devDependencies — which
+# is where `typescript` lives. Without this the build fails with `tsc: not
+# found` even though the install step succeeded. `--include=dev` below says the
+# same thing; both are kept because either one alone is easy to drop by accident.
+# (Spelt as NPM_CONFIG_INCLUDE rather than NPM_CONFIG_PRODUCTION=false, which
+# npm now warns is deprecated.)
+NPM_CONFIG_INCLUDE = "dev"
+# The root `playwright` devDependency is used only for local visual checks. Its
+# install script would otherwise download ~500MB of browsers into the deploy
+# image, which the API never runs.
+PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
 
 [phases.setup]
 nixPkgs = ["nodejs_22"]
