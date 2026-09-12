@@ -173,3 +173,70 @@ export function referralLink(botUsername: string, referralCode: string): string 
   const bot = botUsername.replace(/^@/, '');
   return `https://t.me/${bot}?start=${encodeURIComponent(referralCode)}`;
 }
+
+/**
+ * Turns free text into a task link id.
+ *
+ * A link id is the short, human word that identifies a campaign in a link —
+ * `crediplex` rather than a generated string nobody can read or type. It is
+ * also the task's document id, which is what makes uniqueness a property of
+ * the database rather than a check that can race: two admins saving the same
+ * id at the same moment cannot both succeed.
+ *
+ * Constrained to lowercase letters, digits and single hyphens so it is safe in
+ * a URL, in a Telegram `?start=` payload, and inside the composite
+ * `userId__taskId` keys the completion records use — which is why underscores
+ * are stripped rather than kept.
+ */
+export function toTaskSlug(input: string): string {
+  return input
+    .normalize('NFKD')
+    // Strip accents so "Créditplex" and "Creditplex" cannot become two ids.
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, TASK_SLUG_MAX_LENGTH);
+}
+
+export const TASK_SLUG_MIN_LENGTH = 3;
+export const TASK_SLUG_MAX_LENGTH = 32;
+export const TASK_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** True when a link id is already in the shape the API will accept. */
+export function isTaskSlug(value: string): boolean {
+  return (
+    value.length >= TASK_SLUG_MIN_LENGTH &&
+    value.length <= TASK_SLUG_MAX_LENGTH &&
+    TASK_SLUG_PATTERN.test(value)
+  );
+}
+
+/** Deep link that opens a task inside the Mini App, via the bot. */
+export function taskLink(botUsername: string, slug: string): string {
+  const bot = botUsername.replace(/^@/, '');
+  return `https://t.me/${bot}?start=task_${slug}`;
+}
+
+/**
+ * Accepts a Telegram destination the way an admin would type it.
+ *
+ * `crediplex`, `@crediplex`, `t.me/crediplex` and the full https URL all mean
+ * the same channel, so all four are accepted and normalised. Anything that is
+ * already a URL to somewhere else is left alone — a task may legitimately
+ * point off Telegram.
+ */
+export function normaliseTargetUrl(input: string): string {
+  const value = input.trim();
+  if (!value) return value;
+
+  if (/^https?:\/\//i.test(value)) return value;
+  if (/^t\.me\//i.test(value)) return `https://${value}`;
+  if (/^telegram\.me\//i.test(value)) return `https://${value.replace(/^telegram\.me/i, 't.me')}`;
+
+  // A bare handle, with or without the @.
+  const handle = value.replace(/^@/, '');
+  if (/^[A-Za-z0-9_]{4,32}$/.test(handle)) return `https://t.me/${handle}`;
+
+  return value;
+}

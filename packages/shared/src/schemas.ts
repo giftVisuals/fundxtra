@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { LIMITS, NETWORKS, NIGERIAN_BANKS, BLOCKED_PINS } from './constants';
 import { MAX_KOBO } from './money';
+import {
+  TASK_SLUG_MAX_LENGTH,
+  TASK_SLUG_MIN_LENGTH,
+  TASK_SLUG_PATTERN,
+  normaliseTargetUrl,
+} from './format';
 
 /**
  * Request validation.
@@ -98,6 +104,24 @@ export const taskStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'PAUSED', 'EXPIRED', 
 export const createTaskSchema = z
   .object({
     title: trimmed(120).min(4, 'Give the task a clear title'),
+    /**
+     * The short link id, e.g. `crediplex`.
+     *
+     * Optional: derived from the title when left blank. It becomes the task's
+     * document id, so uniqueness is enforced by the database rather than by a
+     * check that two simultaneous saves could both pass.
+     */
+    slug: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .min(TASK_SLUG_MIN_LENGTH, `Use at least ${TASK_SLUG_MIN_LENGTH} characters`)
+      .max(TASK_SLUG_MAX_LENGTH, `Use at most ${TASK_SLUG_MAX_LENGTH} characters`)
+      .regex(
+        TASK_SLUG_PATTERN,
+        'Use lowercase letters, numbers and single hyphens only — for example crediplex',
+      )
+      .optional(),
     description: trimmed(1200).min(10, 'Describe what the user must do'),
     instructions: z.array(trimmed(300).min(3)).min(1, 'Add at least one instruction').max(12),
     category: taskCategorySchema,
@@ -107,7 +131,21 @@ export const createTaskSchema = z
     budgetKobo: koboSchema,
     perUserLimit: z.number().int().min(1).max(10).default(1),
     verification: verificationMethodSchema,
-    targetUrl: z.string().trim().url('Enter a valid URL').max(600).nullish(),
+    /*
+      A destination typed the way an admin would type it: `crediplex`,
+      `@crediplex`, `t.me/crediplex` or a full URL. Normalised before
+      validation, so the friendly forms are accepted without loosening what is
+      ultimately stored — which is still a URL.
+    */
+    targetUrl: z
+      .string()
+      .trim()
+      .max(600)
+      .transform(normaliseTargetUrl)
+      .refine((value) => /^https?:\/\/\S+$/.test(value), {
+        message: 'Enter a link, or a Telegram username such as crediplex',
+      })
+      .nullish(),
     telegramChatId: trimmed(80).nullish(),
     telegramChatLabel: trimmed(80).nullish(),
     sponsorName: trimmed(80).nullish(),

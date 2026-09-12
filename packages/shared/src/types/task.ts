@@ -40,6 +40,13 @@ export interface TaskSponsor {
 }
 
 export interface Task {
+  /**
+   * The link id, e.g. `crediplex`.
+   *
+   * Also the Firestore document id, which is what makes uniqueness a database
+   * guarantee rather than a check that can race. Tasks created before link ids
+   * existed carry their original generated id here.
+   */
   id: string;
   title: string;
   description: string;

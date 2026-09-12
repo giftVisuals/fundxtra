@@ -1,4 +1,4 @@
-import { BRAND, formatNaira, LIMITS } from '@fundxtra/shared';
+import { BRAND, formatNaira, isTaskSlug, LIMITS, toSignupSource } from '@fundxtra/shared';
 import { getSettings } from './settings';
 import { sendBotMessage, type ReplyMarkup } from '../lib/telegram-bot';
 import { logger } from '../lib/logger';
@@ -67,11 +67,17 @@ function supportButton(supportHandle: string): ReplyMarkup {
  * — so the worst a forged code can do is credit a real referrer who did not
  * earn it, which the referral service already rejects.
  */
-function startMessage(firstName: string | undefined, referralCode: string | null): string {
+function startMessage(
+  firstName: string | undefined,
+  referralCode: string | null,
+  forTask = false,
+): string {
   const greeting = firstName ? `Hi ${firstName}! 👋` : 'Hi! 👋';
   const invited = referralCode
     ? '\n\nYou were invited by a friend — open the app and they get credited once you set your PIN.'
-    : '';
+    : forTask
+      ? '\n\nThis link opens a specific task. Tap below to see what it pays and what to do.'
+      : '';
 
   return [
     `${greeting}\n`,
@@ -123,16 +129,35 @@ export async function handleBotUpdate(update: TelegramUpdate): Promise<void> {
     const supportHandle = settings.platform.supportHandle;
 
     if (command === '/start') {
-      const payload = rest[0];
-      const referralCode = payload && START_PAYLOAD_PATTERN.test(payload) ? payload : null;
-      const url = referralCode
-        ? `${miniAppUrl()}?ref=${encodeURIComponent(referralCode)}`
-        : miniAppUrl();
+      const payload = rest[0] && START_PAYLOAD_PATTERN.test(rest[0]) ? rest[0] : null;
+
+      /*
+        One payload, three meanings, distinguished before anything is looked
+        up:
+
+          task_<id>   a campaign link — open the app on that task
+          website|…   a channel the signup came from (see SIGNUP_SOURCES)
+          anything    a user's referral code
+
+        The task prefix is checked first because `task_crediplex` is neither a
+        channel nor a code, and treating it as one would open a dead referral
+        lookup and lose the campaign the person actually followed.
+      */
+      const taskSlug = payload?.startsWith('task_') ? payload.slice('task_'.length) : null;
+
+      let url = miniAppUrl();
+      if (taskSlug && isTaskSlug(taskSlug)) {
+        url = `${miniAppUrl()}?task=${encodeURIComponent(taskSlug)}`;
+      } else if (payload && !taskSlug) {
+        url = `${miniAppUrl()}?ref=${encodeURIComponent(payload)}`;
+      }
+
+      const referralCode = payload && !taskSlug && !toSignupSource(payload) ? payload : null;
 
       await sendBotMessage(
         chatId,
-        startMessage(message.from.first_name, referralCode),
-        openButton(`Open ${BRAND.name}`, url),
+        startMessage(message.from.first_name, referralCode, Boolean(taskSlug)),
+        openButton(taskSlug ? 'Open this task' : `Open ${BRAND.name}`, url),
       );
       return;
     }

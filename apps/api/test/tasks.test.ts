@@ -419,3 +419,70 @@ describe('manual screenshot review', () => {
     expect(store.snapshot()['tasks/t1']?.spentKobo).toBe(0);
   });
 });
+
+describe('task link ids', () => {
+  /*
+    The link id is the task's document id, which is what makes uniqueness a
+    database guarantee rather than a check that could race between two admins
+    saving at the same moment.
+  */
+  const baseInput = {
+    description: 'Join the channel and stay for the updates.',
+    instructions: ['Open the channel', 'Tap Join'],
+    category: 'TELEGRAM' as const,
+    rewardKobo: 5_000,
+    budgetKobo: 50_000,
+    perUserLimit: 1,
+    verification: 'MANUAL' as const,
+    minimumDwellSeconds: 0,
+    sortWeight: 100,
+    status: 'ACTIVE' as const,
+  };
+
+  it('uses the id the admin typed', async () => {
+    const { createTask } = await import('../src/services/tasks');
+
+    const task = await createTask({ ...baseInput, title: 'Crediplex promo', slug: 'crediplex' }, 'admin');
+
+    expect(task.id).toBe('crediplex');
+  });
+
+  it('refuses a second task with the same id, naming the field', async () => {
+    const { createTask } = await import('../src/services/tasks');
+    await createTask({ ...baseInput, title: 'First', slug: 'crediplex' }, 'admin');
+
+    await expect(
+      createTask({ ...baseInput, title: 'Second', slug: 'crediplex' }, 'admin'),
+    ).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      fields: { slug: expect.stringContaining('already used') },
+    });
+  });
+
+  it('derives an id from the title when none is given', async () => {
+    const { createTask } = await import('../src/services/tasks');
+
+    const task = await createTask({ ...baseInput, title: 'Join Crediplex Channel!' }, 'admin');
+
+    expect(task.id).toBe('join-crediplex-channel');
+  });
+
+  it('suffixes a derived id rather than failing, since the admin chose nothing', async () => {
+    const { createTask } = await import('../src/services/tasks');
+    await createTask({ ...baseInput, title: 'Join Crediplex' }, 'admin');
+
+    const second = await createTask({ ...baseInput, title: 'Join Crediplex' }, 'admin');
+
+    expect(second.id).toBe('join-crediplex-2');
+  });
+
+  it('keeps the completion key unambiguous', async () => {
+    const { createTask } = await import('../src/services/tasks');
+
+    const task = await createTask({ ...baseInput, title: 'A', slug: 'credi-plex-promo' }, 'admin');
+
+    // Completions are keyed `userId__taskId`, so the id must not contain `__`.
+    expect(task.id).not.toContain('__');
+    expect(`555001__${task.id}`.split('__')).toHaveLength(2);
+  });
+});

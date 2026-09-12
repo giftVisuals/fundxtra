@@ -8,12 +8,15 @@ import {
   formatNaira,
   parseNairaInput,
   percentageOf,
+  taskLink,
+  toTaskSlug,
   tokens,
   type Task,
   type TaskCategory,
   type VerificationMethod,
 } from '@fundxtra/shared';
 import { api, ApiError, errorMessage } from '@/lib/api';
+import { config } from '@/lib/config';
 import { useAdmin } from '@/lib/admin-session';
 import { AdminButton, AdminCard, AdminField, Pill, Table, Td, adminInputStyle } from './primitives';
 
@@ -124,6 +127,30 @@ export function TasksView() {
                     {TASK_CATEGORY_LABELS[task.category]}
                     {task.sponsor ? ` · ${task.sponsor.name}` : ''}
                   </div>
+                  {/* The campaign's own share link, ready to copy. Opening it
+                      in Telegram lands on this task inside the Mini App. */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard
+                        ?.writeText(taskLink(config.botUsername, task.id))
+                        .then(() => setNotice(`Link for "${task.title}" copied.`))
+                        .catch(() => setNotice('Could not copy — long-press the link instead.'));
+                    }}
+                    style={{
+                      marginTop: 4,
+                      padding: 0,
+                      border: 'none',
+                      background: 'none',
+                      textAlign: 'left',
+                      fontFamily: tokens.typography.fontMono,
+                      fontSize: tokens.typography.size['2xs'],
+                      color: tokens.semantic.brand,
+                      wordBreak: 'break-all',
+                    }}
+                  >
+                    {taskLink(config.botUsername, task.id)}
+                  </button>
                   {/* Admin-facing configuration warning, e.g. the bot is not
                       an administrator of the target chat. */}
                   {task.verificationWarning && (
@@ -236,6 +263,7 @@ export function TasksView() {
 
 function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
   const [title, setTitle] = useState('');
+  const [slug, setSlug] = useState('');
   const [description, setDescription] = useState('');
   const [instructions, setInstructions] = useState('');
   const [category, setCategory] = useState<TaskCategory>('TELEGRAM');
@@ -276,6 +304,7 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
         minimumDwellSeconds: Number.parseInt(dwell, 10) || 0,
         sortWeight: 100,
         status: 'DRAFT',
+        ...(slug.trim() ? { slug: slug.trim().toLowerCase() } : {}),
         ...(targetUrl.trim() ? { targetUrl: targetUrl.trim() } : {}),
         ...(chatId.trim() ? { telegramChatId: chatId.trim() } : {}),
         ...(sponsorName.trim() ? { sponsorName: sponsorName.trim() } : {}),
@@ -288,9 +317,12 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
       setBusy(false);
     }
   }, [
-    title, description, instructions, category, verification, rewardKobo, budgetKobo,
+    title, slug, description, instructions, category, verification, rewardKobo, budgetKobo,
     dwell, targetUrl, chatId, sponsorName, onCreated,
   ]);
+
+  // Shown live, so the admin sees the link their id produces before saving.
+  const previewSlug = slug.trim() ? toTaskSlug(slug) : toTaskSlug(title);
 
   const ready =
     title.trim().length >= 4 &&
@@ -312,6 +344,39 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
             placeholder="Join the Fundxtra announcements channel"
             style={adminInputStyle}
           />
+        </AdminField>
+
+        {/*
+          The link id. One short word instead of a generated string: it names
+          the campaign in its own share link, and because it is also the task's
+          document id, two campaigns cannot end up sharing one.
+        */}
+        <AdminField
+          label="Link id"
+          hint={fieldErrors.slug ?? 'Optional — taken from the title if you leave it blank.'}
+        >
+          <input
+            value={slug}
+            onChange={(event) => setSlug(event.target.value)}
+            placeholder="crediplex"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            style={adminInputStyle}
+          />
+          {previewSlug && (
+            <p
+              style={{
+                marginTop: 6,
+                fontFamily: tokens.typography.fontMono,
+                fontSize: tokens.typography.size['2xs'],
+                color: tokens.semantic.inkMuted,
+                wordBreak: 'break-all',
+              }}
+            >
+              Share link: {taskLink(config.botUsername, previewSlug)}
+            </p>
+          )}
         </AdminField>
 
         <AdminField label="Description" hint={fieldErrors.description}>

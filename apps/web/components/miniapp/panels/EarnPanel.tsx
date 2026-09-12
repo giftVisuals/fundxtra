@@ -66,11 +66,33 @@ export function EarnPanel() {
   const [category, setCategory] = useState<TaskCategory | 'ALL'>('ALL');
   const [openTask, setOpenTask] = useState<TaskListItem | null>(null);
 
+  /*
+    A campaign link — t.me/<bot>?start=task_<id> — lands here as `?task=<id>`.
+
+    Consumed once, on the first load that contains it, and then forgotten: a
+    deep link should open the task it names, but re-opening that same sheet
+    every time the list refreshes would fight the person trying to close it.
+  */
+  const requestedTask = useRef<string | null>(
+    typeof window === 'undefined'
+      ? null
+      : new URLSearchParams(window.location.search).get('task'),
+  );
+
   const load = useCallback(async () => {
     setLoadError(null);
     try {
       const result = await api.get<{ tasks: TaskListItem[] }>('/tasks');
       setTasks(result.tasks);
+
+      const wanted = requestedTask.current;
+      if (wanted) {
+        requestedTask.current = null;
+        const match = result.tasks.find((task) => task.id === wanted);
+        // A link to a task that has ended or is fully claimed simply shows the
+        // list, which already explains why nothing is there.
+        if (match) setOpenTask(match);
+      }
     } catch (caught) {
       setLoadError(errorMessage(caught));
       setTasks([]);

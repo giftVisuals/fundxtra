@@ -3,7 +3,9 @@ import {
   ERROR_CODES,
   LIMITS,
   assertPositiveKobo,
+  isTaskSlug,
   percentageOf,
+  toTaskSlug,
   type CreateTaskInput,
   type Kobo,
   type Task,
@@ -136,7 +138,36 @@ export async function createTask(
     if (!telegramChatLabel && probe.title) telegramChatLabel = probe.title;
   }
 
-  const taskId = newTaskId();
+  /*
+    The link id doubles as the document id.
+
+    That is what makes "two tasks cannot share an id" a property of the
+    database: `create()` on an existing document fails, so two admins saving
+    the same id at the same instant cannot both succeed. A uniqueness check
+    followed by a write would race.
+
+    Left blank, it is derived from the title, and a numeric suffix is appended
+    only if that derived id is taken — an admin who typed nothing should not be
+    told to pick a different id, while an admin who typed one explicitly must
+    be, rather than having their choice silently altered.
+  */
+  const explicitSlug = input.slug?.trim() ?? '';
+  let taskId = explicitSlug || toTaskSlug(input.title);
+  if (!isTaskSlug(taskId)) {
+    // A title of only punctuation or non-Latin script can derive to nothing.
+    taskId = `task-${newTaskId().slice(0, 8).toLowerCase()}`;
+  }
+
+  const collection = db().collection(COLLECTIONS.tasks);
+  if (!explicitSlug) {
+    const base = taskId;
+    for (let suffix = 2; suffix <= 50; suffix += 1) {
+      const existing = await collection.doc(taskId).get();
+      if (!existing.exists) break;
+      taskId = `${base}-${String(suffix)}`.slice(0, 32);
+    }
+  }
+
   const now = Timestamp.now();
   const sponsor: TaskSponsor | null = input.sponsorName
     ? { name: input.sponsorName, logoUrl: input.sponsorLogoUrl ?? null, verified: false }
@@ -171,7 +202,21 @@ export async function createTask(
     updatedAt: now,
   };
 
-  await db().collection(COLLECTIONS.tasks).doc(taskId).create(record);
+  try {
+    await collection.doc(taskId).create(record);
+  } catch (error) {
+    // ALREADY_EXISTS. The message names the field so the admin form can point
+    // at it, and says what to do rather than only what went wrong.
+    if ((error as { code?: number }).code === 6) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, {
+        fields: {
+          slug: `The link id "${taskId}" is already used by another task. Choose a different one.`,
+        },
+        detail: `duplicate task slug ${taskId}`,
+      });
+    }
+    throw error;
+  }
 
   if (record.status === 'ACTIVE') {
     bumpStats({ activeCampaigns: 1, activeCampaignBudgetKobo: budgetKobo });
