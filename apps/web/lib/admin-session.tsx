@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { Permission, SystemSettings } from '@fundxtra/shared';
+import type { Permission, SignupSource, SystemSettings } from '@fundxtra/shared';
 import { api, ApiError, setSessionToken, setUnauthenticatedHandler } from './api';
 import { initialiseTelegram, insideTelegram, rawInitData } from './telegram';
 
@@ -40,6 +40,8 @@ export interface AdminStats {
   };
   referrals: { total: number; qualified: number; pending: number; payoutKobo: number };
   risk: { flaggedUsers: number; highRiskUsers: number };
+  /** Signups per channel, from the reserved `?start=` payloads. */
+  signupSources?: Partial<Record<SignupSource, number>>;
 }
 
 export interface AdminIdentity {

@@ -2,7 +2,13 @@
 
 import Link from 'next/link';
 import { useState } from 'react';
-import { formatNaira, tokens, type Permission } from '@fundxtra/shared';
+import {
+  SIGNUP_SOURCES,
+  formatNaira,
+  tokens,
+  type Permission,
+  type SignupSource,
+} from '@fundxtra/shared';
 import { useAdmin } from '@/lib/admin-session';
 import { supportUrl } from '@/lib/config';
 import { AdminButton, AdminCard, Metric } from './primitives';
@@ -452,6 +458,12 @@ function OverviewView() {
 
   const { stats, provider, settings } = data;
 
+  const taggedSignups = (
+    Object.entries(stats.signupSources ?? {}) as Array<[SignupSource, number]>
+  )
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1]);
+
   return (
     <div style={{ display: 'grid', gap: 18 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -572,6 +584,47 @@ function OverviewView() {
 
       {/* Provider status. Surfaced because "why can nobody redeem airtime" is
           otherwise a mystery an operator cannot answer from the UI. */}
+      {/*
+        Where signups came from.
+        
+        Only channels with a signup are listed: a row of zeros says nothing,
+        and an empty card says "nobody has arrived through a tagged link yet",
+        which is the honest reading on a new platform.
+      */}
+      <AdminCard title="Where signups came from">
+        {taggedSignups.length === 0 ? (
+          <p
+            style={{
+              fontSize: tokens.typography.size.sm,
+              color: tokens.semantic.inkMuted,
+              lineHeight: tokens.typography.leading.relaxed,
+            }}
+          >
+            No signups through a tagged link yet. Every &ldquo;Start earning&rdquo; button on the
+            public site carries <code>?start=website</code>, so anyone arriving that way is
+            counted here. Add <code>?start=whatsapp</code>, <code>?start=x</code> or another
+            channel to your own links to track them separately.
+          </p>
+        ) : (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))',
+              gap: 10,
+            }}
+          >
+            {taggedSignups.map(([source, count]) => (
+              <Metric
+                key={source}
+                label={SIGNUP_SOURCES[source]}
+                value={String(count)}
+                delta={count === 1 ? '1 signup' : `${String(count)} signups`}
+              />
+            ))}
+          </div>
+        )}
+      </AdminCard>
+
       <AdminCard title="Reward fulfilment">
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
