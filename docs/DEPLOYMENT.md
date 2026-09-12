@@ -85,6 +85,10 @@ console.
 
 ## 3. Railway (the API)
 
+The live service is **https://fundxtra.up.railway.app**, listening on port
+8080. That origin is also baked into `apps/web/lib/config.ts`, so changing the
+Railway domain means changing it there too.
+
 Create a project from this repository. `nixpacks.toml` owns install, build and
 start; `railway.json` sets only the builder, the health check and the restart
 policy. Do not add a `buildCommand` to `railway.json`: it replaces the build
@@ -126,7 +130,7 @@ Do **not** set `PORT` — Railway injects it. Do **not** set `ALLOW_DEV_AUTH`.
 ### After the first deploy
 
 ```bash
-curl https://<your-service>.up.railway.app/health
+curl https://fundxtra.up.railway.app/health
 ```
 
 `ready: true` means everything is configured. `ready: false` lists exactly what

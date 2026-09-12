@@ -21,7 +21,7 @@
  * redeploy — it is not a dashboard setting. `localhost` is used when running
  * the site locally with `npm run dev`.
  */
-const API_ORIGIN = 'https://fundxtra-api.up.railway.app';
+const API_ORIGIN = 'https://fundxtra.up.railway.app';
 
 /** Telegram bot that hosts the Mini App. */
 const BOT_USERNAME = 'fundxtrabot';
