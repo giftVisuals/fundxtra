@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { LIMITS } from '@fundxtra/shared';
 import { defaultSettings, withdrawalAvailability } from '../src/services/settings';
 
 /**
@@ -18,8 +19,29 @@ const inAnHour = () => new Date(Date.now() + 3_600_000).toISOString();
 const anHourAgo = () => new Date(Date.now() - 3_600_000).toISOString();
 
 describe('withdrawal availability', () => {
-  it('ships closed by default, so a fresh deployment cannot pay out unintentionally', () => {
-    const availability = withdrawalAvailability(defaultSettings());
+  it('ships open for cash, but never pays out without an admin', () => {
+    /*
+      Cash withdrawals are open by default so a working platform is not gated
+      behind a switch nobody knew to flip. The protection is not the closed
+      portal, it is the approval: `requireManualApproval` means a request only
+      ever queues, and money moves when a person approves it. Airtime, data,
+      Stars and Premium stay off, because those need a fulfilment provider that
+      does not exist yet.
+    */
+    const defaults = defaultSettings();
+
+    expect(withdrawalAvailability(defaults).open).toBe(true);
+    expect(defaults.withdrawals.requireManualApproval).toBe(true);
+    expect(defaults.withdrawals.minAmountKobo).toBe(LIMITS.MIN_CASH_WITHDRAWAL_KOBO);
+
+    expect(defaults.rewards.airtimeEnabled).toBe(false);
+    expect(defaults.rewards.dataEnabled).toBe(false);
+    expect(defaults.rewards.starsEnabled).toBe(false);
+    expect(defaults.rewards.premiumEnabled).toBe(false);
+  });
+
+  it('still reports the maintenance message once an admin closes it', () => {
+    const availability = withdrawalAvailability(settings({ enabled: false }));
     expect(availability.open).toBe(false);
     expect(availability.reason).toContain('Your balance is safe');
   });

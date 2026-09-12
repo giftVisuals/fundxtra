@@ -3,6 +3,7 @@ import {
   formatNaira,
   type Admin,
   type Kobo,
+  type SignupSource,
   type User,
   type UserStatus,
 } from '@fundxtra/shared';
@@ -16,6 +17,7 @@ import { mapUser, requireUser, setUserStatus } from './users';
 import { listReferrals } from './referrals';
 import { listUserWithdrawals, pendingWithdrawalTotals } from './withdrawals';
 import { listUserRedemptions } from './rewards';
+import { getSignupSourceCounts } from './stats';
 import { newUuid } from '../lib/ids';
 
 /**
@@ -224,6 +226,8 @@ export async function adminDashboard(): Promise<{
   };
   referrals: { total: number; qualified: number; pending: number; payoutKobo: Kobo };
   risk: { flaggedUsers: number; highRiskUsers: number };
+  /** Signups per channel, from the reserved `?start=` payloads. */
+  signupSources: Record<SignupSource, number>;
 }> {
   const firestore = db();
   const startOfToday = Timestamp.fromDate(startOfPlatformDay());
@@ -234,6 +238,7 @@ export async function adminDashboard(): Promise<{
     qualifiedReferrals, pendingReferrals,
     flaggedUsers, highRiskUsers,
     pendingWithdrawals,
+    signupSources,
     userDocs, taskDocs,
   ] = await Promise.all([
     firestore.collection(COLLECTIONS.users).count().get(),
@@ -254,6 +259,7 @@ export async function adminDashboard(): Promise<{
     firestore.collection(COLLECTIONS.users).where('riskScore', '>', 0).count().get(),
     firestore.collection(COLLECTIONS.users).where('riskScore', '>=', 60).count().get(),
     pendingWithdrawalTotals(),
+    getSignupSourceCounts(),
     firestore.collection(COLLECTIONS.users).get(),
     firestore.collection(COLLECTIONS.tasks).where('status', '==', 'ACTIVE').get(),
   ]);
@@ -311,6 +317,7 @@ export async function adminDashboard(): Promise<{
       flaggedUsers: flaggedUsers.data().count,
       highRiskUsers: highRiskUsers.data().count,
     },
+    signupSources,
   };
 }
 

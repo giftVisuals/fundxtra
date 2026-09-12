@@ -359,7 +359,11 @@ describe('public endpoints', () => {
     expect(response.status).toBe(200);
     expect(response.body.data.brand.name).toBe('Fundxtra');
     expect(response.body.data.brand.supportHandle).toBe('@fundxtracarebot');
-    expect(response.body.data.startEarningUrl).toBe('https://t.me/fundxtrabot');
+    // Carries the website attribution, which is how signups from the public
+    // site are counted without guessing.
+    expect(response.body.data.startEarningUrl).toBe(
+      'https://t.me/fundxtrabot?start=website',
+    );
     expect(response.body.data.referral.rewardKobo).toBe(10_000);
     expect(response.body.data.maxTaskRewardKobo).toBe(100_000);
     // Rewards default to off until a provider exists.

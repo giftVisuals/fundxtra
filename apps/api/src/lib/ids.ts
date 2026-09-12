@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { isReservedReferralCode } from '@fundxtra/shared';
 
 /**
  * Identifier generation.
@@ -46,13 +47,24 @@ const REFERRAL_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
  * these codes get typed by hand and read aloud.
  */
 export function newReferralCode(): string {
-  const bytes = randomBytes(8);
-  let code = '';
-  for (let index = 0; index < 8; index += 1) {
-    const byte = bytes[index] ?? 0;
-    code += REFERRAL_ALPHABET[byte % REFERRAL_ALPHABET.length];
+  // Bounded rather than `while (true)`: reserved words are a handful out of
+  // 32^8, so a second draw is already unreachable in practice, and a loop with
+  // no ceiling in code that runs on every signup is a hang waiting to happen.
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const bytes = randomBytes(8);
+    let code = '';
+    for (let index = 0; index < 8; index += 1) {
+      const byte = bytes[index] ?? 0;
+      code += REFERRAL_ALPHABET[byte % REFERRAL_ALPHABET.length];
+    }
+    // A code equal to a reserved channel word would be read as a channel
+    // before any referrer lookup, so its owner would never be credited for a
+    // referral. See isReservedReferralCode.
+    if (!isReservedReferralCode(code)) return code;
   }
-  return code;
+  // Unreachable in practice; a deterministic suffix beats returning a code
+  // that is known to be unusable.
+  return `${REFERRAL_ALPHABET[0] ?? 'A'}${randomBytes(4).toString('hex').toUpperCase()}`;
 }
 
 export const newUuid = (): string => randomUUID();

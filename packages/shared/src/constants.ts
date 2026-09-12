@@ -105,6 +105,62 @@ function buildBlockedPins(): readonly string[] {
 
 export const BLOCKED_PINS: readonly string[] = buildBlockedPins();
 
+/**
+ * Where a signup came from.
+ *
+ * A `?start=` payload on a bot link is normally a user's referral code. These
+ * reserved words are not: they mark the channel the person arrived through, so
+ * "how many people joined from the website" is answerable without asking every
+ * user or inventing a number.
+ *
+ * They are safe to reserve because a generated referral code cannot equal one:
+ * codes are drawn from an uppercase alphabet that excludes I, O, 0 and 1, and
+ * these are matched case-insensitively against this list *before* any referral
+ * lookup, so a source can never be mistaken for a referrer.
+ */
+export const SIGNUP_SOURCES = {
+  website: 'Website',
+  x: 'X / Twitter',
+  whatsapp: 'WhatsApp',
+  telegram: 'Telegram channel',
+  tiktok: 'TikTok',
+  instagram: 'Instagram',
+  facebook: 'Facebook',
+  youtube: 'YouTube',
+  flyer: 'Flyer / QR code',
+} as const;
+
+export type SignupSource = keyof typeof SIGNUP_SOURCES;
+
+export const SIGNUP_SOURCE_CODES = Object.keys(SIGNUP_SOURCES) as SignupSource[];
+
+/** True when a `?start=` payload names a channel rather than a referrer. */
+export function isSignupSource(payload: string): payload is SignupSource {
+  return Object.prototype.hasOwnProperty.call(SIGNUP_SOURCES, payload.trim().toLowerCase());
+}
+
+/** Normalises a payload to a source code, or null when it is not one. */
+export function toSignupSource(payload: string | null | undefined): SignupSource | null {
+  if (!payload) return null;
+  const lower = payload.trim().toLowerCase();
+  return isSignupSource(lower) ? (lower as SignupSource) : null;
+}
+
+/**
+ * True when a candidate referral code would collide with a reserved word.
+ *
+ * Referral code generation must reject these. Two of the source names —
+ * WHATSAPP and TELEGRAM — are eight characters drawn entirely from the
+ * referral alphabet, so they are reachable by chance. The odds are about one
+ * in a trillion, and the consequence is not small: the payload is read as a
+ * channel *before* any referrer lookup, so that user would silently never be
+ * credited for a single referral. Guaranteed by construction instead of left
+ * to probability.
+ */
+export function isReservedReferralCode(candidate: string): boolean {
+  return isSignupSource(candidate);
+}
+
 /** The Telegram ID that always holds SUPER_ADMIN, independent of the database. */
 export const PRIMARY_ADMIN_TELEGRAM_ID = '6438544386';
 

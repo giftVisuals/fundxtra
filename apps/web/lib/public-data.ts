@@ -1,5 +1,5 @@
 import type { PublicStats } from '@fundxtra/shared';
-import { config } from './config';
+import { config, websiteStartUrl } from './config';
 
 /**
  * Server-side fetching for the marketing site.
@@ -103,7 +103,8 @@ export function fallbackConfig(): PublicConfig {
       supportHandle: config.supportHandle,
       supportUrl: `https://t.me/${config.supportHandle.replace(/^@/, '')}`,
     },
-    startEarningUrl: `https://t.me/${config.botUsername}`,
+    // Matches what /public/config serves, including the website attribution.
+    startEarningUrl: websiteStartUrl,
     botUsername: `@${config.botUsername}`,
     referral: { rewardKobo: 10_000, enabled: true },
     withdrawal: { minAmountKobo: 30_000, open: false },

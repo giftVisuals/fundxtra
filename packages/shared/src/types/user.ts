@@ -1,5 +1,6 @@
 import type { Kobo } from '../money';
 import type { IsoDate } from './common';
+import type { SignupSource } from '../constants';
 
 export type UserStatus = 'ACTIVE' | 'SUSPENDED' | 'BANNED';
 
@@ -51,6 +52,8 @@ export interface User {
   referralCode: string;
   /** Telegram id of the referrer, set once and never changed. */
   referredBy: string | null;
+  /** Reserved `?start=` payload the account arrived through, e.g. `website`. */
+  signupSource: SignupSource | null;
   referralCount: number;
   qualifiedReferralCount: number;
   referralEarningsKobo: Kobo;

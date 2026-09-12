@@ -21,7 +21,16 @@ let cached: { value: SystemSettings; expiresAt: number } | null = null;
 export function defaultSettings(): SystemSettings {
   return {
     withdrawals: {
-      enabled: false,
+      /*
+        Cash withdrawals are open by default; airtime, data, Stars and Premium
+        are not, because those need a fulfilment provider and NasfamPay's API
+        does not exist yet — they show as "coming soon" instead of pretending.
+
+        Open does not mean automatic: `requireManualApproval` below stays true,
+        so every request waits for an admin. No money leaves without a person
+        approving it, and an admin can close the portal entirely from Settings.
+      */
+      enabled: true,
       maintenanceMessage:
         'Withdrawals open shortly. Your balance is safe and will be waiting for you.',
       opensAt: null,

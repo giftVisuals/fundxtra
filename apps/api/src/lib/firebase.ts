@@ -100,4 +100,6 @@ export const COLLECTIONS = {
 export const DOC_IDS = {
   settings: 'global',
   publicStats: 'publicStats',
+  /** Per-channel signup tallies, so attribution needs no query. */
+  signupSources: 'signupSources',
 } as const;

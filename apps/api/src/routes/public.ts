@@ -87,7 +87,14 @@ publicRouter.get(
           supportHandle: settings.platform.supportHandle,
           supportUrl: `https://t.me/${settings.platform.supportHandle.replace(/^@/, '')}`,
         },
-        startEarningUrl: `https://t.me/${botUsername}`,
+        /*
+          `?start=website` marks the channel this signup came from. Every
+          "Start earning" button on the public site goes through here, so the
+          site is measurable from real signups rather than estimated — and the
+          reserved word cannot be confused with a user's referral code, which
+          the auth route checks against a fixed list first.
+        */
+        startEarningUrl: `https://t.me/${botUsername}?start=website`,
         botUsername: `@${botUsername}`,
         referral: {
           rewardKobo: settings.referrals.rewardKobo,

@@ -4,6 +4,7 @@ import {
   type AccountFlag,
   type DashboardSummary,
   type RiskBand,
+  type SignupSource,
   type User,
   type UserProfile,
   type UserStatus,
@@ -15,7 +16,7 @@ import { nowIso, toIso, toIsoRequired } from '../lib/time';
 import { logger } from '../lib/logger';
 import type { TelegramUser } from '../lib/telegram-auth';
 import { getSettings, withdrawalAvailability } from './settings';
-import { bumpStats } from './stats';
+import { bumpStats, countSignup } from './stats';
 import { sumTodayCredits } from './ledger';
 
 /**
@@ -58,7 +59,7 @@ export interface FindOrCreateResult {
  */
 export async function findOrCreateUser(
   telegramUser: TelegramUser,
-  options: { referralCodeFromStartParam?: string | null } = {},
+  options: { referralCodeFromStartParam?: string | null; signupSource?: SignupSource | null } = {},
 ): Promise<FindOrCreateResult> {
   const userId = String(telegramUser.id);
   const firestore = db();
@@ -104,6 +105,13 @@ export async function findOrCreateUser(
       referralCount: 0,
       qualifiedReferralCount: 0,
       referralEarningsKobo: 0,
+      /*
+        Which channel this signup arrived through, from a reserved `?start=`
+        payload such as `website`. Written once at creation and never changed:
+        a later visit through a different link does not rewrite where someone
+        originally came from.
+      */
+      signupSource: options.signupSource ?? null,
       riskScore: 0,
       riskBand: 'LOW' as RiskBand,
       flags: [] as AccountFlag[],
@@ -118,6 +126,7 @@ export async function findOrCreateUser(
 
   if (result.created) {
     bumpStats({ totalUsers: 1 });
+    if (options.signupSource) countSignup(options.signupSource);
     logger.info({ userId, username: result.user.username }, 'New Fundxtra user created');
   }
   return result;
@@ -283,6 +292,7 @@ export function mapUser(id: string, data: Record<string, unknown>): User {
     tasksCompleted: (data.tasksCompleted as number | undefined) ?? 0,
     referralCode: String(data.referralCode ?? ''),
     referredBy: (data.referredBy as string | null) ?? null,
+    signupSource: (data.signupSource as SignupSource | null) ?? null,
     referralCount: (data.referralCount as number | undefined) ?? 0,
     qualifiedReferralCount: (data.qualifiedReferralCount as number | undefined) ?? 0,
     referralEarningsKobo: (data.referralEarningsKobo as number | undefined) ?? 0,

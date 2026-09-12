@@ -1,5 +1,9 @@
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
-import type { PublicStats } from '@fundxtra/shared';
+import {
+  SIGNUP_SOURCE_CODES,
+  type PublicStats,
+  type SignupSource,
+} from '@fundxtra/shared';
 import { COLLECTIONS, DOC_IDS, db } from '../lib/firebase';
 import { logger } from '../lib/logger';
 import { nowIso, toIsoRequired } from '../lib/time';
@@ -51,6 +55,49 @@ export function bumpStats(delta: StatsDelta): void {
     .catch((error: unknown) => {
       logger.warn({ err: error, delta }, 'Failed to update platform statistics');
     });
+}
+
+/**
+ * Count a signup against the channel it came from.
+ *
+ * A counter document rather than a query: "how many users came from the
+ * website" is then a single read with no composite index, and it stays a single
+ * read at any number of users. Fire-and-forget, like `bumpStats` — a failed
+ * count must never fail the signup it describes.
+ */
+export function countSignup(source: SignupSource): void {
+  void db()
+    .collection(COLLECTIONS.counters)
+    .doc(DOC_IDS.signupSources)
+    .set({ [source]: FieldValue.increment(1), updatedAt: Timestamp.now() }, { merge: true })
+    .catch((error: unknown) => {
+      logger.warn({ err: error, source }, 'Failed to count a signup source');
+    });
+}
+
+/** Signup totals per channel, zero-filled so every source is reported. */
+export async function getSignupSourceCounts(): Promise<Record<SignupSource, number>> {
+  const counts = Object.fromEntries(SIGNUP_SOURCE_CODES.map((code) => [code, 0])) as Record<
+    SignupSource,
+    number
+  >;
+
+  try {
+    const snapshot = await db()
+      .collection(COLLECTIONS.counters)
+      .doc(DOC_IDS.signupSources)
+      .get();
+    if (!snapshot.exists) return counts;
+
+    for (const code of SIGNUP_SOURCE_CODES) {
+      const value = snapshot.get(code);
+      if (typeof value === 'number' && Number.isFinite(value)) counts[code] = value;
+    }
+  } catch (error) {
+    logger.warn({ err: error }, 'Could not read signup source counts');
+  }
+
+  return counts;
 }
 
 export async function getPublicStats(): Promise<PublicStats> {

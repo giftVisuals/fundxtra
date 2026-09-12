@@ -49,4 +49,17 @@ export const config = {
 } as const;
 
 export const supportUrl = `https://t.me/${config.supportHandle.replace(/^@/, '')}`;
+
+/**
+ * Where a public "Start earning" button sends someone.
+ *
+ * Carries `?start=website`, a reserved word the API records as the channel the
+ * signup came from. That is what makes "how many people joined from the site"
+ * answerable from real data instead of a guess — and it cannot be mistaken for
+ * a user's referral code, which the API checks against a fixed list first.
+ *
+ * `startEarningUrl` keeps the plain link for places where attribution would be
+ * wrong, such as a button inside the app itself.
+ */
 export const startEarningUrl = `https://t.me/${config.botUsername}`;
+export const websiteStartUrl = `https://t.me/${config.botUsername}?start=website`;

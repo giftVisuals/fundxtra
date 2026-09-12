@@ -3,6 +3,7 @@ import {
   changePinSchema,
   createPinSchema,
   telegramAuthSchema,
+  toSignupSource,
   verifyPinSchema,
   type UserProfile,
 } from '@fundxtra/shared';
@@ -62,13 +63,23 @@ authRouter.post(
       const input = parsed(res, telegramAuthSchema);
       const telegramUser = await authenticateTelegram(input.initData, req.clientIp, input.startParam);
 
-      const { user, created } = await findOrCreateUser(telegramUser.user, {});
+      /*
+        One `?start=` payload, two possible meanings.
 
-      // Referral attribution happens on first contact only, and the code can
-      // come either from the signed start_param or from an explicit field.
-      const referralCode = telegramUser.startParam ?? input.startParam ?? null;
-      if (created && referralCode) {
-        await attributeReferral(user, referralCode);
+        A reserved word like `website` names the channel the person arrived
+        through; anything else is treated as a referral code. Checked in that
+        order, and against a fixed list, so a channel name can never be looked
+        up as a referrer — and so the landing page can be measured without
+        asking anyone where they came from or inventing a number.
+      */
+      const startPayload = telegramUser.startParam ?? input.startParam ?? null;
+      const signupSource = toSignupSource(startPayload);
+
+      const { user, created } = await findOrCreateUser(telegramUser.user, { signupSource });
+
+      // Referral attribution happens on first contact only.
+      if (created && startPayload && !signupSource) {
+        await attributeReferral(user, startPayload);
       }
 
       const settings = await getSettings();
