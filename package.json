@@ -1,0 +1,22 @@
+{
+  "name": "fundxtra",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Fundxtra — a Telegram-first rewards and earning platform. Complete tasks. Earn rewards. Refer friends.",
+  "engines": { "node": ">=20.11.0" },
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "build": "npm run build --workspace @fundxtra/shared && npm run build --workspaces --if-present",
+    "build:shared": "npm run build --workspace @fundxtra/shared",
+    "dev": "npm run dev --workspace @fundxtra/api & npm run dev --workspace @fundxtra/web",
+    "dev:api": "npm run dev --workspace @fundxtra/api",
+    "dev:web": "npm run dev --workspace @fundxtra/web",
+    "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run build:shared && npm run test --workspaces --if-present",
+    "seed": "npm run seed --workspace @fundxtra/api"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
