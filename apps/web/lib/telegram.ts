@@ -98,9 +98,31 @@ export function rawInitData(): string | null {
   return app.initData;
 }
 
-/** The referral code from the bot's start payload, if the user arrived by link. */
+/** Shape a referral code is allowed to take, before it is sent anywhere. */
+const REFERRAL_CODE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * The referral code, if the user arrived by an invite link.
+ *
+ * Two sources, in order of trustworthiness:
+ *
+ * 1. `start_param` from `initDataUnsafe` — part of the HMAC-signed payload,
+ *    populated for a direct Mini App link (`t.me/<bot>/<app>?startapp=CODE`).
+ * 2. `?ref=` on this page's URL — how the bot's `web_app` button carries the
+ *    code, because Telegram does not sign a `start_param` for a button.
+ *
+ * The second is a claim, not a fact, and the API treats it as one: attribution
+ * happens once, only when the account is created, and self-referral is refused.
+ * It is filtered to a known shape here so nothing stranger than a code is ever
+ * put on the wire.
+ */
 export function startParam(): string | null {
-  return webApp()?.initDataUnsafe?.start_param ?? null;
+  const signed = webApp()?.initDataUnsafe?.start_param;
+  if (signed && REFERRAL_CODE_PATTERN.test(signed)) return signed;
+
+  if (typeof window === 'undefined') return null;
+  const fromUrl = new URLSearchParams(window.location.search).get('ref');
+  return fromUrl && REFERRAL_CODE_PATTERN.test(fromUrl) ? fromUrl : null;
 }
 
 /**

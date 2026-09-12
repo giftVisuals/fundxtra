@@ -1,4 +1,5 @@
 import { createApp } from './app';
+import { configureBot } from './lib/bot-setup';
 import { env, readiness } from './config/env';
 import { logger } from './lib/logger';
 
@@ -25,6 +26,13 @@ function main(): void {
       { port: env.PORT, environment: env.NODE_ENV, ready: status.ready },
       'Fundxtra API listening',
     );
+
+    // After the port is open, so the health check never waits on Telegram, and
+    // so the webhook URL Telegram is told about is already being served.
+    // Non-fatal by design: see lib/bot-setup.ts.
+    void configureBot().catch((error: unknown) => {
+      logger.error({ err: error }, 'Bot configuration failed');
+    });
   });
 
   // Railway sends SIGTERM on redeploy; finish in-flight requests first so a

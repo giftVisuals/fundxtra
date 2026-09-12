@@ -122,7 +122,7 @@ FIREBASE_PROJECT_ID=fundxtra
 FIREBASE_STORAGE_BUCKET=fundxtra.firebasestorage.app
 REWARD_PROVIDER=none
 PRIMARY_ADMIN_TELEGRAM_ID=6438544386
-PUBLIC_WEB_URL=https://fundxtra.name.ng
+PUBLIC_WEB_URL=https://fundxtra.vercel.app
 ```
 
 Do **not** set `PORT` — Railway injects it. Do **not** set `ALLOW_DEV_AUTH`.
@@ -255,6 +255,46 @@ and `/admin` also carry `X-Robots-Tag: noindex`.
 
 ---
 
+## 4b. The Telegram bot
+
+Nothing to configure by hand. On boot the API calls the Bot API to:
+
+1. `getMe` — confirm the token works, and log the bot's username.
+2. `setMyCommands` — populate `/start`, `/help`, `/support` in the chat menu.
+3. `setChatMenuButton` — point the button beside the message box at
+   `PUBLIC_WEB_URL/app`.
+4. `setWebhook` — register `<api origin>/telegram/webhook`, with a
+   `secret_token`.
+
+The API origin comes from `PUBLIC_API_URL` or, on Railway, the injected
+`RAILWAY_PUBLIC_DOMAIN`. Every step is best-effort and non-fatal: the Mini App
+authenticates through signed `initData` and does not depend on any of it. If
+the webhook cannot be registered, `/start` goes unanswered and the log says so
+at error level in production, because a silent bot means every referral link
+opens an empty chat.
+
+**Why the webhook is not optional.** A referral link is
+`t.me/<bot>?start=<code>`, which opens a chat, not the Mini App. The bot's
+reply is what carries the invited friend to the app, with the code on the
+button's URL as `?ref=`.
+
+**Authentication.** Telegram echoes the `secret_token` in
+`X-Telegram-Bot-Api-Secret-Token`, and the route compares it in constant time
+and refuses anything else — a forged `/start` would otherwise let anyone submit
+a referral code. The secret is derived from `SESSION_SECRET` unless
+`TELEGRAM_WEBHOOK_SECRET` is set, so it needs no variable of its own; rotating
+`SESSION_SECRET` rotates it, and the next boot re-registers.
+
+Check it with `getWebhookInfo`:
+
+```
+https://api.telegram.org/bot<TOKEN>/getWebhookInfo
+```
+
+`url` should be your API's webhook and `last_error_message` absent.
+
+---
+
 ## 5. Verify the deployment
 
 - [ ] `GET /health` returns `ready: true` with no warnings
@@ -264,7 +304,9 @@ and `/admin` also carry `X-Robots-Tag: noindex`.
       this is correct, and the site shows an early-stage state rather than
       fabricated numbers
 - [ ] The landing page loads at the custom domain with no console errors
+- [ ] `/start` in the bot replies with an "Open Fundxtra" button
 - [ ] Opening the bot's menu button loads the Mini App and asks for a PIN
+- [ ] A `t.me/<bot>?start=<code>` link replies and the button URL carries `?ref=`
 - [ ] Creating a PIN reaches the dashboard
 - [ ] `/admin` opens for Telegram id 6438544386 and refuses everyone else
 - [ ] A referral link qualifies and pays ₦100 after the friend sets a PIN

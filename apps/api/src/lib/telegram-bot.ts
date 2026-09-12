@@ -248,3 +248,129 @@ export async function notifyUser(telegramId: string, text: string): Promise<bool
     return false;
   }
 }
+
+/* ------------------------------------------------------------------------- *
+ * Bot presence: replying in chat, and configuring the bot with Telegram.
+ *
+ * A referral link is `t.me/<bot>?start=<code>`, which opens a *chat* with the
+ * bot. Without a reply there, an invited friend sees an empty conversation and
+ * leaves — so the reply below is what makes referrals work at all, not a
+ * nicety. The message carries a Mini App button rather than instructions,
+ * because the fewer taps between the link and the dashboard the better.
+ * ------------------------------------------------------------------------- */
+
+export interface InlineKeyboardButton {
+  text: string;
+  web_app?: { url: string };
+  url?: string;
+}
+
+export interface ReplyMarkup {
+  inline_keyboard: InlineKeyboardButton[][];
+}
+
+/**
+ * Send a chat message, optionally with buttons.
+ *
+ * Failure is logged and swallowed. A webhook that throws makes Telegram retry
+ * the same update, which would send the message twice if the first attempt had
+ * actually arrived.
+ */
+export async function sendBotMessage(
+  chatId: string | number,
+  text: string,
+  replyMarkup?: ReplyMarkup,
+): Promise<boolean> {
+  try {
+    await call('sendMessage', {
+      chat_id: typeof chatId === 'string' ? Number.parseInt(chatId, 10) : chatId,
+      text,
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+    });
+    return true;
+  } catch (error) {
+    logger.warn({ chatId, err: error }, 'Could not send the bot message');
+    return false;
+  }
+}
+
+export interface BotCommand {
+  command: string;
+  description: string;
+}
+
+/** Populates the "/" menu in the chat. */
+export async function setMyCommands(commands: BotCommand[]): Promise<boolean> {
+  try {
+    await call('setMyCommands', { commands });
+    return true;
+  } catch (error) {
+    logger.warn({ err: error }, 'Could not set the bot commands');
+    return false;
+  }
+}
+
+/**
+ * Points the chat's menu button at the Mini App.
+ *
+ * Doing this over the API rather than by hand in @BotFather means a fresh
+ * deployment configures itself, and the button can never drift from the URL
+ * this deployment actually serves.
+ */
+export async function setChatMenuButton(miniAppUrl: string, label: string): Promise<boolean> {
+  try {
+    await call('setChatMenuButton', {
+      menu_button: { type: 'web_app', text: label, web_app: { url: miniAppUrl } },
+    });
+    return true;
+  } catch (error) {
+    logger.warn({ miniAppUrl, err: error }, 'Could not set the chat menu button');
+    return false;
+  }
+}
+
+export interface WebhookInfo {
+  url: string;
+  pending_update_count: number;
+  last_error_message?: string;
+  last_error_date?: number;
+}
+
+export async function getWebhookInfo(): Promise<WebhookInfo | null> {
+  try {
+    return await call<WebhookInfo>('getWebhookInfo', {});
+  } catch (error) {
+    logger.warn({ err: error }, 'Could not read the webhook info');
+    return null;
+  }
+}
+
+/**
+ * Register the webhook.
+ *
+ * `secret_token` makes Telegram send an `X-Telegram-Bot-Api-Secret-Token`
+ * header with every update, which the route requires. Without it the webhook
+ * URL would accept forged updates from anyone who guessed it — and an update
+ * is what triggers a referral attribution.
+ *
+ * `allowed_updates` is narrowed to messages: nothing else is handled, and
+ * asking for less means Telegram does not queue updates that would only be
+ * discarded.
+ */
+export async function setWebhook(url: string, secretToken: string): Promise<boolean> {
+  try {
+    await call('setWebhook', {
+      url,
+      secret_token: secretToken,
+      allowed_updates: ['message'],
+      drop_pending_updates: false,
+      max_connections: 20,
+    });
+    return true;
+  } catch (error) {
+    logger.error({ url, err: error }, 'Could not register the Telegram webhook');
+    return false;
+  }
+}

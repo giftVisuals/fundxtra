@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { z } from 'zod';
 import { PRIMARY_ADMIN_TELEGRAM_ID } from '@fundxtra/shared';
 import { resolveServiceAccount, type ServiceAccountResult } from './service-account';
@@ -72,8 +73,33 @@ const envSchema = z.object({
   /** Primary super admin, overridable for staging. */
   PRIMARY_ADMIN_TELEGRAM_ID: z.string().regex(/^\d+$/).default(PRIMARY_ADMIN_TELEGRAM_ID),
 
-  /** Public web origin, used to build absolute links. */
-  PUBLIC_WEB_URL: z.string().url().default('https://fundxtra.name.ng'),
+  /**
+   * Public web origin, used to build absolute links and the Mini App URL.
+   *
+   * Defaults to the Vercel deployment because that is what is actually
+   * serving; change it to https://fundxtra.name.ng once that domain is
+   * connected, or set this variable to override without a deploy.
+   */
+  PUBLIC_WEB_URL: z.string().url().default('https://fundxtra.vercel.app'),
+
+  /**
+   * This API's own public origin, used to register the Telegram webhook.
+   *
+   * Railway injects RAILWAY_PUBLIC_DOMAIN, so on Railway neither of these
+   * needs setting by hand.
+   */
+  PUBLIC_API_URL: z.string().url().optional(),
+  RAILWAY_PUBLIC_DOMAIN: z.string().optional(),
+
+  /**
+   * Shared secret Telegram echoes back in X-Telegram-Bot-Api-Secret-Token.
+   *
+   * Optional: derived from SESSION_SECRET when unset, so the webhook is
+   * authenticated without another variable to set. Rotating SESSION_SECRET
+   * rotates this too, and the next boot re-registers the webhook with the new
+   * value.
+   */
+  TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -143,4 +169,38 @@ export function readiness(): { ready: boolean; missing: string[]; warnings: stri
   }
 
   return { ready: missing.length === 0, missing, warnings };
+}
+
+/* ------------------------------------------------------------------------- *
+ * Derived origins.
+ * ------------------------------------------------------------------------- */
+
+/** The Mini App entry point, which is also the chat menu button's target. */
+export function miniAppUrl(): string {
+  return `${env.PUBLIC_WEB_URL.replace(/\/$/, '')}/app`;
+}
+
+/**
+ * This API's public origin, preferring the explicit variable over Railway's
+ * injected domain. Null when neither is known, in which case the webhook is
+ * not registered rather than registered at a guessed URL.
+ */
+export function apiOrigin(): string | null {
+  if (env.PUBLIC_API_URL) return env.PUBLIC_API_URL.replace(/\/$/, '');
+  if (env.RAILWAY_PUBLIC_DOMAIN) return `https://${env.RAILWAY_PUBLIC_DOMAIN.replace(/\/$/, '')}`;
+  return null;
+}
+
+/**
+ * The webhook secret, derived from SESSION_SECRET when not set explicitly.
+ *
+ * Derivation is one-way, so the webhook secret leaking from a request header
+ * does not expose the session signing key. Null when there is nothing to
+ * derive from, and the route then refuses every update: an unauthenticated
+ * webhook would let anyone trigger a referral attribution.
+ */
+export function telegramWebhookSecret(): string | null {
+  if (env.TELEGRAM_WEBHOOK_SECRET) return env.TELEGRAM_WEBHOOK_SECRET;
+  if (!env.SESSION_SECRET) return null;
+  return createHmac('sha256', env.SESSION_SECRET).update('telegram-webhook').digest('hex');
 }

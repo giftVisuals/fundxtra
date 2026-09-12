@@ -11,6 +11,7 @@ import { adminRouter } from './routes/admin';
 import { announcementsRouter } from './routes/announcements';
 import { authRouter } from './routes/auth';
 import { publicRouter } from './routes/public';
+import { telegramRouter } from './routes/telegram';
 import { referralsRouter } from './routes/referrals';
 import { tasksRouter } from './routes/tasks';
 import { walletRouter } from './routes/wallet';
@@ -128,6 +129,12 @@ export function createApp(): Express {
   // Public marketing endpoints: no session, and readable during maintenance so
   // the landing page can explain the outage rather than breaking.
   app.use('/public', publicRouter);
+
+  // Telegram's webhook. Before the maintenance gate so the bot can still greet
+  // and point at support during an outage, and outside the session middleware
+  // because Telegram carries no session — it authenticates with a secret
+  // header instead. See routes/telegram.ts.
+  app.use('/telegram', telegramRouter);
 
   app.use('/auth', authRouter);
 
