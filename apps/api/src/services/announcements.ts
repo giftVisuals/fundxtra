@@ -6,6 +6,7 @@ import type {
   AnnouncementInput,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
+import { millisOf, runOrderedQuery } from '../lib/query-fallback';
 import { newAnnouncementId } from '../lib/ids';
 import { nowIso, toIso, toIsoRequired } from '../lib/time';
 
@@ -34,12 +35,14 @@ function isLive(data: Record<string, unknown>, now = Date.now()): boolean {
 export async function listLiveAnnouncements(
   audience: 'APP' | 'PUBLIC',
 ): Promise<Announcement[]> {
-  const snapshot = await db()
-    .collection(COLLECTIONS.announcements)
-    .where('published', '==', true)
-    .orderBy('createdAt', 'desc')
-    .limit(50)
-    .get();
+  const base = db().collection(COLLECTIONS.announcements).where('published', '==', true);
+  const snapshot = await runOrderedQuery({
+    base,
+    ordered: base.orderBy('createdAt', 'desc').limit(50),
+    limit: 50,
+    timestampOf: (data) => millisOf(data.createdAt),
+    label: 'published announcements, newest first',
+  });
 
   const now = Date.now();
   return snapshot.docs

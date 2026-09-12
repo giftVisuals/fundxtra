@@ -9,6 +9,7 @@ import {
   type User,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
+import { millisOf, runOrderedQuery } from '../lib/query-fallback';
 import { toIso, toIsoRequired } from '../lib/time';
 import { logger } from '../lib/logger';
 import { idempotencyKey, postEntryIn } from './ledger';
@@ -274,12 +275,19 @@ export async function listReferrals(
   referrerId: string,
   options: { limit?: number } = {},
 ): Promise<Referral[]> {
-  const snapshot = await db()
-    .collection(COLLECTIONS.referrals)
-    .where('referrerId', '==', referrerId)
-    .orderBy('createdAt', 'desc')
-    .limit(Math.min(options.limit ?? 50, 200))
-    .get();
+  const limit = Math.min(options.limit ?? 50, 200);
+  const base = db().collection(COLLECTIONS.referrals).where('referrerId', '==', referrerId);
+
+  // Survives a missing composite index: see lib/query-fallback.ts. A user's
+  // own referral list must not disappear because an index is still building.
+  const snapshot = await runOrderedQuery({
+    base,
+    ordered: base.orderBy('createdAt', 'desc').limit(limit),
+    limit,
+    timestampOf: (data) => millisOf(data.createdAt),
+    label: 'referrals by referrer, newest first',
+  });
+
   return snapshot.docs.map((doc) => mapReferral(doc.id, doc.data()));
 }
 

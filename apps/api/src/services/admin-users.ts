@@ -8,6 +8,7 @@ import {
   type UserStatus,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
+import { millisOf, runOrderedQuery } from '../lib/query-fallback';
 import { AppError } from '../lib/errors';
 import { logger } from '../lib/logger';
 import { startOfPlatformDay } from '../lib/time';
@@ -94,17 +95,26 @@ export async function searchUsers(options: {
     return { items: candidates, nextCursor: null };
   }
 
-  let query = collection as unknown as import('firebase-admin/firestore').Query;
-  if (options.status) query = query.where('status', '==', options.status);
-  if (options.flagged) query = query.where('riskScore', '>', 0);
-  query = query.orderBy(options.flagged ? 'riskScore' : 'createdAt', 'desc').limit(limit + 1);
+  const sortField = options.flagged ? 'riskScore' : 'createdAt';
+  let base = collection as unknown as import('firebase-admin/firestore').Query;
+  if (options.status) base = base.where('status', '==', options.status);
+  if (options.flagged) base = base.where('riskScore', '>', 0);
+  let query = base.orderBy(sortField, 'desc').limit(limit + 1);
 
   if (options.cursor) {
     const cursorDoc = await collection.doc(options.cursor).get();
     if (cursorDoc.exists) query = query.startAfter(cursorDoc);
   }
 
-  const snapshot = await query.get();
+  const snapshot = await runOrderedQuery({
+    base,
+    ordered: query,
+    limit: limit + 1,
+    // riskScore is a plain number, so millisOf passes it through unchanged and
+    // the same comparator orders both sorts.
+    timestampOf: (data) => millisOf(data[sortField]),
+    label: `users by ${sortField}, highest first`,
+  });
   const docs = snapshot.docs.slice(0, limit);
   const last = docs[docs.length - 1];
 

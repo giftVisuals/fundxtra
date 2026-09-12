@@ -12,6 +12,7 @@ import {
   type TransactionType,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
+import { millisOf, runOrderedQuery } from '../lib/query-fallback';
 import { AppError, internal, notFound } from '../lib/errors';
 import { newTransactionId } from '../lib/ids';
 import { logger } from '../lib/logger';
@@ -277,9 +278,10 @@ export async function listUserTransactions(
   const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
   const collection = db().collection(COLLECTIONS.transactions);
 
-  let query = collection.where('userId', '==', userId);
-  if (options.type) query = query.where('type', '==', options.type);
-  query = query.orderBy('createdAt', 'desc').limit(limit + 1);
+  let base = collection.where('userId', '==', userId);
+  if (options.type) base = base.where('type', '==', options.type);
+
+  let query = base.orderBy('createdAt', 'desc').limit(limit + 1);
 
   if (options.cursor) {
     const cursorDoc = await collection.doc(options.cursor).get();
@@ -288,7 +290,23 @@ export async function listUserTransactions(
     if (cursorDoc.exists) query = query.startAfter(cursorDoc);
   }
 
-  const snapshot = await query.get();
+  /*
+    Survives a missing composite index: see lib/query-fallback.ts. A wallet
+    that shows an error instead of a history is the worst version of this
+    screen, and whether an index has finished building is not something the
+    person looking at their own money can do anything about.
+
+    Paging is only available on the indexed path — the fallback cannot honour a
+    cursor without an ordering — so it returns the newest page and no more,
+    which `nextCursor` then reports as the end.
+  */
+  const snapshot = await runOrderedQuery({
+    base,
+    ordered: query,
+    limit: limit + 1,
+    timestampOf: (data) => millisOf(data.createdAt),
+    label: 'transactions by user, newest first',
+  });
   const docs = snapshot.docs.slice(0, limit);
   const hasMore = snapshot.docs.length > limit;
   const last = docs[docs.length - 1];

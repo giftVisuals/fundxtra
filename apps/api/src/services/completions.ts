@@ -8,6 +8,7 @@ import {
   type User,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
+import { millisOf, runOrderedQuery } from '../lib/query-fallback';
 import { AppError, notFound } from '../lib/errors';
 import { newSubmissionId } from '../lib/ids';
 import { logger } from '../lib/logger';
@@ -485,18 +486,26 @@ export async function listSubmissions(options: {
   const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
   const collection = db().collection(COLLECTIONS.taskSubmissions);
 
-  let query = collection as unknown as import('firebase-admin/firestore').Query;
-  if (options.status) query = query.where('status', '==', options.status);
-  if (options.taskId) query = query.where('taskId', '==', options.taskId);
-  if (options.userId) query = query.where('userId', '==', options.userId);
-  query = query.orderBy('submittedAt', 'desc').limit(limit + 1);
+  let base = collection as unknown as import('firebase-admin/firestore').Query;
+  if (options.status) base = base.where('status', '==', options.status);
+  if (options.taskId) base = base.where('taskId', '==', options.taskId);
+  if (options.userId) base = base.where('userId', '==', options.userId);
+  let query = base.orderBy('submittedAt', 'desc').limit(limit + 1);
 
   if (options.cursor) {
     const cursorDoc = await collection.doc(options.cursor).get();
     if (cursorDoc.exists) query = query.startAfter(cursorDoc);
   }
 
-  const snapshot = await query.get();
+  // The review queue is how proofs get approved; it must not vanish because
+  // an index is still building. See lib/query-fallback.ts.
+  const snapshot = await runOrderedQuery({
+    base,
+    ordered: query,
+    limit: limit + 1,
+    timestampOf: (data) => millisOf(data.submittedAt),
+    label: 'submission queue, newest first',
+  });
   const docs = snapshot.docs.slice(0, limit);
   const hasMore = snapshot.docs.length > limit;
   const last = docs[docs.length - 1];

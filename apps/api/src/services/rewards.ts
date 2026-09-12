@@ -14,6 +14,7 @@ import {
   type User,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
+import { millisOf, runOrderedQuery } from '../lib/query-fallback';
 import { AppError, notFound } from '../lib/errors';
 import { newRedemptionId } from '../lib/ids';
 import { logger } from '../lib/logger';
@@ -361,12 +362,15 @@ export async function listRewardCatalogue(): Promise<{
 }
 
 export async function listUserRedemptions(userId: string, limit = 20): Promise<Redemption[]> {
-  const snapshot = await db()
-    .collection(COLLECTIONS.redemptions)
-    .where('userId', '==', userId)
-    .orderBy('createdAt', 'desc')
-    .limit(Math.min(limit, 100))
-    .get();
+  const capped = Math.min(limit, 100);
+  const base = db().collection(COLLECTIONS.redemptions).where('userId', '==', userId);
+  const snapshot = await runOrderedQuery({
+    base,
+    ordered: base.orderBy('createdAt', 'desc').limit(capped),
+    limit: capped,
+    timestampOf: (data) => millisOf(data.createdAt),
+    label: 'redemptions by user, newest first',
+  });
   return snapshot.docs.map((doc) => mapRedemption(doc.id, doc.data()));
 }
 

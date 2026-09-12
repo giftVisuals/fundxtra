@@ -1,6 +1,7 @@
 import { Timestamp } from 'firebase-admin/firestore';
 import type { Admin, AuditAction, AuditLog } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
+import { millisOf, runOrderedQuery } from '../lib/query-fallback';
 import { newAuditId } from '../lib/ids';
 import { logger } from '../lib/logger';
 import { toIsoRequired } from '../lib/time';
@@ -90,18 +91,24 @@ export async function listAuditLogs(options: {
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
   const collection = db().collection(COLLECTIONS.auditLogs);
 
-  let query = collection as unknown as import('firebase-admin/firestore').Query;
-  if (options.action) query = query.where('action', '==', options.action);
-  if (options.actorId) query = query.where('actorId', '==', options.actorId);
-  if (options.targetId) query = query.where('targetId', '==', options.targetId);
-  query = query.orderBy('createdAt', 'desc').limit(limit + 1);
+  let base = collection as unknown as import('firebase-admin/firestore').Query;
+  if (options.action) base = base.where('action', '==', options.action);
+  if (options.actorId) base = base.where('actorId', '==', options.actorId);
+  if (options.targetId) base = base.where('targetId', '==', options.targetId);
+  let query = base.orderBy('createdAt', 'desc').limit(limit + 1);
 
   if (options.cursor) {
     const cursorDoc = await collection.doc(options.cursor).get();
     if (cursorDoc.exists) query = query.startAfter(cursorDoc);
   }
 
-  const snapshot = await query.get();
+  const snapshot = await runOrderedQuery({
+    base,
+    ordered: query,
+    limit: limit + 1,
+    timestampOf: (data) => millisOf(data.createdAt),
+    label: 'audit log, newest first',
+  });
   const docs = snapshot.docs.slice(0, limit);
   const last = docs[docs.length - 1];
 

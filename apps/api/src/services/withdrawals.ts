@@ -12,6 +12,7 @@ import {
   type WithdrawalStatus,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
+import { millisOf, runOrderedQuery } from '../lib/query-fallback';
 import { AppError, notFound } from '../lib/errors';
 import { newWithdrawalId } from '../lib/ids';
 import { logger } from '../lib/logger';
@@ -314,12 +315,15 @@ export async function listUserWithdrawals(
   userId: string,
   limit = 20,
 ): Promise<Withdrawal[]> {
-  const snapshot = await db()
-    .collection(COLLECTIONS.withdrawals)
-    .where('userId', '==', userId)
-    .orderBy('requestedAt', 'desc')
-    .limit(Math.min(limit, 100))
-    .get();
+  const capped = Math.min(limit, 100);
+  const base = db().collection(COLLECTIONS.withdrawals).where('userId', '==', userId);
+  const snapshot = await runOrderedQuery({
+    base,
+    ordered: base.orderBy('requestedAt', 'desc').limit(capped),
+    limit: capped,
+    timestampOf: (data) => millisOf(data.requestedAt),
+    label: 'withdrawals by user, newest first',
+  });
   return snapshot.docs.map((doc) => mapWithdrawal(doc.id, doc.data()));
 }
 
@@ -331,16 +335,22 @@ export async function listWithdrawals(options: {
   const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
   const collection = db().collection(COLLECTIONS.withdrawals);
 
-  let query = collection as unknown as import('firebase-admin/firestore').Query;
-  if (options.status) query = query.where('status', '==', options.status);
-  query = query.orderBy('requestedAt', 'desc').limit(limit + 1);
+  let base = collection as unknown as import('firebase-admin/firestore').Query;
+  if (options.status) base = base.where('status', '==', options.status);
+  let query = base.orderBy('requestedAt', 'desc').limit(limit + 1);
 
   if (options.cursor) {
     const cursorDoc = await collection.doc(options.cursor).get();
     if (cursorDoc.exists) query = query.startAfter(cursorDoc);
   }
 
-  const snapshot = await query.get();
+  const snapshot = await runOrderedQuery({
+    base,
+    ordered: query,
+    limit: limit + 1,
+    timestampOf: (data) => millisOf(data.requestedAt),
+    label: 'withdrawal queue, newest first',
+  });
   const docs = snapshot.docs.slice(0, limit);
   const last = docs[docs.length - 1];
 
