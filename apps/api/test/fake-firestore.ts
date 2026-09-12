@@ -220,6 +220,36 @@ class FakeTransaction {
   }
 }
 
+class FakeWriteBatch {
+  private readonly writes: Write[] = [];
+
+  constructor(private readonly store: FakeFirestore) {}
+
+  set(ref: FakeDocumentReference, data: Doc, options?: { merge?: boolean }): this {
+    this.writes.push({ kind: options?.merge ? 'merge' : 'set', path: ref.path, data });
+    return this;
+  }
+
+  create(ref: FakeDocumentReference, data: Doc): this {
+    this.writes.push({ kind: 'create', path: ref.path, data });
+    return this;
+  }
+
+  update(ref: FakeDocumentReference, data: Doc): this {
+    this.writes.push({ kind: 'update', path: ref.path, data });
+    return this;
+  }
+
+  delete(ref: FakeDocumentReference): this {
+    this.writes.push({ kind: 'delete', path: ref.path, data: {} });
+    return this;
+  }
+
+  async commit(): Promise<void> {
+    this.store.commit(this.writes);
+  }
+}
+
 export class FakeFirestore {
   private readonly documents = new Map<string, Stored>();
   /** Hook fired just before a transaction commits. Used to inject a race. */
@@ -286,6 +316,14 @@ export class FakeFirestore {
       }
     }
     throw lastError;
+  }
+
+  /**
+   * A write batch. Like the real SDK, writes are buffered and applied together
+   * on `commit()`, so a batch that fails validation applies nothing.
+   */
+  batch(): FakeWriteBatch {
+    return new FakeWriteBatch(this);
   }
 
   /** Run a query against the store. */
@@ -512,4 +550,4 @@ function matchesFilter(data: Doc, [field, op, expected]: Filter): boolean {
   }
 }
 
-export { FakeDocumentReference, FakeCollectionReference, FakeQuery, FakeDocumentSnapshot };
+export { FakeDocumentReference, FakeCollectionReference, FakeQuery, FakeDocumentSnapshot, FakeWriteBatch };

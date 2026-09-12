@@ -351,13 +351,14 @@ export async function auditUserBalance(userId: string): Promise<{
   ]);
   if (!userSnapshot.exists) throw notFound('that account');
 
+  // Every row in this ledger moved the balance at the moment it was written,
+  // including rows that later ended up PENDING, FAILED or REVERSED: a correction
+  // is always a separate compensating REVERSAL row, never an edit. `status`
+  // therefore describes the *external fulfilment*, not whether money moved, so
+  // excluding any status here would double-count a reversal.
   let ledgerKobo = 0;
   let entryCount = 0;
   for (const doc of transactionSnapshot.docs) {
-    const status = doc.get('status') as TransactionStatus;
-    // FAILED debits were compensated by a REVERSAL row, so both are skipped to
-    // avoid counting the same money twice.
-    if (status === 'FAILED') continue;
     ledgerKobo += (doc.get('amountKobo') as number | undefined) ?? 0;
     entryCount += 1;
   }
