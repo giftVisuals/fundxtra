@@ -1,5 +1,6 @@
 import { createApp } from './app';
 import { configureBot } from './lib/bot-setup';
+import { ensureIndexes } from './lib/firestore-admin';
 import { env, readiness } from './config/env';
 import { logger } from './lib/logger';
 
@@ -33,6 +34,15 @@ function main(): void {
     void configureBot().catch((error: unknown) => {
       logger.error({ err: error }, 'Bot configuration failed');
     });
+
+    // Composite indexes, created through the Firestore Admin API with the
+    // credentials already loaded. Non-fatal: without them some queries fail,
+    // but the API must still serve everything that does not need one.
+    if (status.ready) {
+      void ensureIndexes().catch((error: unknown) => {
+        logger.error({ err: error }, 'Index provisioning failed');
+      });
+    }
   });
 
   // Railway sends SIGTERM on redeploy; finish in-flight requests first so a

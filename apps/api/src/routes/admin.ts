@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { COLLECTIONS, db } from '../lib/firebase';
 import { AppError, forbidden, notFound } from '../lib/errors';
 import { adminOnly, requirePermission } from '../middleware/auth';
+import { ensureIndexes } from '../lib/firestore-admin';
 import { ok } from '../middleware/respond';
 import { parsed, pathParam, query, validateBody, validateQuery } from '../middleware/validate';
 import {
@@ -676,6 +677,23 @@ function describeSettingsChange(patch: Record<string, unknown>): string {
 adminRouter.post('/stats/recompute', requirePermission('settings:manage'), async (_req, res, next) => {
   try {
     ok(res, { stats: await recomputeStats() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Re-run composite index provisioning on demand.
+ *
+ * The same routine runs at boot. This exists so an operator who sees a screen
+ * fail with DATABASE_SETUP_REQUIRED can retry without redeploying, and can see
+ * whether the service account is allowed to create indexes at all — the
+ * failure reason is in the response, not only in a log they may not be able to
+ * reach.
+ */
+adminRouter.post('/maintenance/indexes', requirePermission('settings:manage'), async (_req, res, next) => {
+  try {
+    ok(res, { indexes: await ensureIndexes() });
   } catch (error) {
     next(error);
   }

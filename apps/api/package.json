@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "seed": "tsx src/scripts/seed.ts",
-    "bootstrap-admin": "tsx src/scripts/bootstrap-admin.ts"
+    "bootstrap-admin": "tsx src/scripts/bootstrap-admin.ts",
+    "indexes:write": "tsx src/scripts/write-indexes.ts"
   },
   "dependencies": {
     "@fundxtra/shared": "*",
