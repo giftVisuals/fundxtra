@@ -67,3 +67,37 @@ export const internal = (detail: string, cause?: unknown) =>
 export function isAppError(error: unknown): error is AppError {
   return error instanceof AppError;
 }
+
+/**
+ * Structural check for a Zod error.
+ *
+ * `instanceof ZodError` is unreliable across the CJS/ESM boundary: the API
+ * compiles to CommonJS and resolves `zod/index.cjs`, while `@fundxtra/shared`
+ * can be loaded as ESM (in the bundler, in the web app, in vitest) and resolve
+ * `zod/index.mjs` — two distinct classes for the same error. An `instanceof`
+ * check then silently fails and every validation error becomes a 500.
+ *
+ * Matching on the shape avoids that whole class of bug.
+ */
+export function isZodError(
+  error: unknown,
+): error is { name: string; issues: Array<{ path: Array<string | number>; message: string }>; message: string } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'ZodError' &&
+    Array.isArray((error as { issues?: unknown }).issues)
+  );
+}
+
+/** Collapse Zod issues into one message per field, for form display. */
+export function zodFieldErrors(error: {
+  issues: Array<{ path: Array<string | number>; message: string }>;
+}): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const issue of error.issues) {
+    const path = issue.path.join('.') || 'value';
+    if (!fields[path]) fields[path] = issue.message;
+  }
+  return fields;
+}

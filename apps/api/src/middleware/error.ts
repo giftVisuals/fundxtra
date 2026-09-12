@@ -1,8 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
-import { ZodError } from 'zod';
 import { ERROR_CODES, ERROR_MESSAGES, GENERIC_ERROR_MESSAGE, type ApiFailure } from '@fundxtra/shared';
-import { AppError, isAppError } from '../lib/errors';
-import { MoneyError } from '@fundxtra/shared';
+import { AppError, isAppError, isZodError, zodFieldErrors } from '../lib/errors';
 import { isProduction } from '../config/env';
 
 /**
@@ -61,18 +59,21 @@ export function errorHandler(
 function normalise(error: unknown): AppError {
   if (isAppError(error)) return error;
 
-  if (error instanceof ZodError) {
-    const fields: Record<string, string> = {};
-    for (const issue of error.issues) {
-      const path = issue.path.join('.') || 'value';
-      if (!fields[path]) fields[path] = issue.message;
-    }
-    return new AppError(ERROR_CODES.VALIDATION_FAILED, { fields, detail: error.message });
+  if (isZodError(error)) {
+    return new AppError(ERROR_CODES.VALIDATION_FAILED, {
+      fields: zodFieldErrors(error),
+      detail: error.message,
+    });
   }
 
-  if (error instanceof MoneyError) {
+  // Same CJS/ESM caveat as Zod: MoneyError is thrown inside @fundxtra/shared.
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'MoneyError'
+  ) {
     return new AppError(ERROR_CODES.VALIDATION_FAILED, {
-      detail: `Money validation failed: ${error.message}`,
+      detail: `Money validation failed: ${(error as Error).message}`,
     });
   }
 

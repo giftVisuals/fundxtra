@@ -1,6 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { ZodError, type ZodTypeAny, type z } from 'zod';
-import { AppError } from '../lib/errors';
+import type { ZodTypeAny, z } from 'zod';
+import { AppError, isZodError, zodFieldErrors } from '../lib/errors';
 import { ERROR_CODES } from '@fundxtra/shared';
 
 /**
@@ -52,13 +52,8 @@ export function parsed<T extends ZodTypeAny>(res: Response, _schema: T): z.infer
 }
 
 function toAppError(error: unknown): unknown {
-  if (!(error instanceof ZodError)) return error;
-  const fields: Record<string, string> = {};
-  for (const issue of error.issues) {
-    const path = issue.path.join('.') || 'value';
-    if (!fields[path]) fields[path] = issue.message;
-  }
-  return new AppError(ERROR_CODES.VALIDATION_FAILED, { fields });
+  if (!isZodError(error)) return error;
+  return new AppError(ERROR_CODES.VALIDATION_FAILED, { fields: zodFieldErrors(error) });
 }
 
 /**

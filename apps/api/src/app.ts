@@ -7,7 +7,13 @@ import { RATE_LIMITS } from './lib/rate-limit';
 import { accessLog, requestContext } from './middleware/context';
 import { errorHandler, notFoundHandler } from './middleware/error';
 import { rateLimit } from './middleware/rate-limit';
+import { adminRouter } from './routes/admin';
 import { authRouter } from './routes/auth';
+import { publicRouter } from './routes/public';
+import { referralsRouter } from './routes/referrals';
+import { tasksRouter } from './routes/tasks';
+import { walletRouter } from './routes/wallet';
+import { maintenanceGate } from './middleware/auth';
 
 /**
  * Express application.
@@ -94,7 +100,20 @@ export function createApp(): Express {
   // A broad per-IP ceiling under the per-route policies.
   app.use(rateLimit(RATE_LIMITS.general, { name: 'global', by: 'ip' }));
 
+  // Public marketing endpoints: no session, and readable during maintenance so
+  // the landing page can explain the outage rather than breaking.
+  app.use('/public', publicRouter);
+
   app.use('/auth', authRouter);
+
+  // Admin routes are mounted before the maintenance gate so operators can keep
+  // working during an outage — usually to end it.
+  app.use('/admin', adminRouter);
+
+  app.use(maintenanceGate);
+  app.use('/tasks', tasksRouter);
+  app.use('/referrals', referralsRouter);
+  app.use('/wallet', walletRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
