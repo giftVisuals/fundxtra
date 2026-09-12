@@ -161,9 +161,19 @@ img, svg, video { display: block; max-width: 100%; }
 .fx-safe-top { padding-top: env(safe-area-inset-top, 0px); }
 .fx-safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
-/* Clearance so scrolling content ends above the floating glass tab bar. */
+/*
+  Room below the last card so the glass tab bar never covers content.
+
+  Set with the `padding-bottom` longhand and applied to an element whose own
+  inline styles must also use longhands: an inline `padding` shorthand
+  outranks this rule and silently zeroes it, which is how the bottom of every
+  panel ended up under the bar.
+
+  `!important` is not the fix for that and is deliberately absent — the
+  clearance has to stay overridable by a panel that manages its own footer.
+*/
 .fx-tabbar-clearance {
-  padding-bottom: calc(var(--fx-tab-bar-clearance) + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(var(--fx-tab-bar-clearance, 106px) + env(safe-area-inset-bottom, 0px));
 }
 
 /* --------------------------------------------------------------------------

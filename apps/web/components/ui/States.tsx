@@ -376,3 +376,55 @@ export function BootLoader({ message = 'Opening Fundxtra' }: { message?: string 
     </div>
   );
 }
+
+/**
+ * Inline "working on it" strip.
+ *
+ * Sits inside a form rather than replacing the screen, because a full-screen
+ * loader after a PIN entry loses the context of what is being confirmed. What
+ * matters is that *something* visibly changes the moment the last digit lands:
+ * without it the dots simply sit there, the request looks ignored, and people
+ * tap again — which is exactly what was reported.
+ *
+ * `aria-live="polite"` so a screen reader announces it too; the dots alone are
+ * invisible to one.
+ */
+export function InlineWorking({ message }: { message: string }) {
+  const reduceMotion = useReducedMotion();
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 10,
+        marginTop: 16,
+      }}
+    >
+      <motion.span
+        aria-hidden="true"
+        animate={reduceMotion ? undefined : { rotate: 360 }}
+        transition={{ duration: 0.9, repeat: Infinity, ease: 'linear' }}
+        style={{
+          width: 16,
+          height: 16,
+          borderRadius: '50%',
+          border: `2px solid ${tokens.colors.cocoa[200]}`,
+          borderTopColor: tokens.semantic.brand,
+          flexShrink: 0,
+        }}
+      />
+      <span
+        style={{
+          fontSize: tokens.typography.size.sm,
+          fontWeight: tokens.typography.weight.medium,
+          color: tokens.semantic.inkMuted,
+        }}
+      >
+        {message}
+      </span>
+    </div>
+  );
+}

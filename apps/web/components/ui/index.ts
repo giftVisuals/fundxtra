@@ -12,5 +12,6 @@ export {
   ErrorState,
   SuccessState,
   BootLoader,
+  InlineWorking,
   type EmptyStateProps,
 } from './States';

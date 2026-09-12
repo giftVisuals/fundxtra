@@ -143,7 +143,12 @@ export function AppShell() {
         style={{
           maxWidth: tokens.layout.appMaxWidth,
           margin: '0 auto',
-          padding: '0 16px',
+          // `paddingInline`, never the `padding` shorthand: an inline
+          // shorthand outranks the stylesheet and would reset the
+          // padding-bottom that `.fx-tabbar-clearance` sets to 0, leaving the
+          // last card of every panel trapped under the glass bar. That is
+          // exactly what it did.
+          paddingInline: 16,
         }}
       >
         <SwipeablePanels ids={[...TAB_IDS]} activeId={activeTab} onChange={changeTab}>

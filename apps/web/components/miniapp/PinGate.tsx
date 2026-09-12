@@ -6,7 +6,7 @@ import { BLOCKED_PINS, LIMITS, tokens } from '@fundxtra/shared';
 import { api, ApiError } from '@/lib/api';
 import { supportUrl } from '@/lib/config';
 import { haptic, openExternal } from '@/lib/telegram';
-import { Button, PinInput } from '@/components/ui';
+import { Button, InlineWorking, PinInput } from '@/components/ui';
 
 /**
  * PIN creation and unlock.
@@ -67,6 +67,17 @@ export function PinGate({
     [],
   );
 
+  /*
+    True once the server has accepted the PIN and the dashboard is loading.
+
+    The submit flag used to be cleared in a `finally`, which ran on success as
+    well — re-enabling the keypad during the dashboard load, precisely the
+    window in which someone taps again. It is now cleared only on failure, and
+    this flag exists so the message can say "Opening your dashboard" instead of
+    still claiming to check a PIN that has already been accepted.
+  */
+  const [handedOff, setHandedOff] = useState(false);
+
   const submitCreate = useCallback(
     async (confirmPin: string) => {
       setSubmitting(true);
@@ -77,9 +88,11 @@ export function PinGate({
           confirmPin,
         });
         haptic.success();
+        setHandedOff(true);
         onAuthenticated(result.token);
       } catch (caught) {
         haptic.error();
+        setSubmitting(false);
         const message =
           caught instanceof ApiError
             ? (caught.fieldError('pin') ?? caught.fieldError('confirmPin') ?? caught.message)
@@ -89,8 +102,6 @@ export function PinGate({
         setStep('enter');
         setFirst('');
         setValue('');
-      } finally {
-        setSubmitting(false);
       }
     },
     [first, onAuthenticated],
@@ -103,9 +114,11 @@ export function PinGate({
       try {
         const result = await api.post<{ token: string }>('/auth/pin/verify', { pin });
         haptic.success();
+        setHandedOff(true);
         onAuthenticated(result.token);
       } catch (caught) {
         haptic.error();
+        setSubmitting(false);
         setValue('');
         if (caught instanceof ApiError) {
           if (caught.code === 'PIN_LOCKED') {
@@ -123,8 +136,6 @@ export function PinGate({
         } else {
           setError('We could not check your PIN. Please try again.');
         }
-      } finally {
-        setSubmitting(false);
       }
     },
     [onAuthenticated],
@@ -263,18 +274,39 @@ export function PinGate({
               autoFocus
             />
 
-            {attemptsLeft !== null && attemptsLeft > 0 && !error && (
-              <p
-                style={{
-                  marginTop: 12,
-                  textAlign: 'center',
-                  fontSize: tokens.typography.size.xs,
-                  color: tokens.semantic.inkMuted,
-                }}
-              >
-                {attemptsLeft} {attemptsLeft === 1 ? 'attempt' : 'attempts'} left before a
-                temporary lock.
-              </p>
+            {/*
+              The moment the fourth digit lands, the request is in flight and
+              the keypad is disabled — but nothing used to say so, so the screen
+              looked frozen and people tapped again. This is that signal, and it
+              takes priority over the attempts hint: only one of them can be
+              true at a time.
+            */}
+            {submitting ? (
+              <InlineWorking
+                message={
+                  handedOff
+                    ? 'Opening your dashboard…'
+                    : mode === 'create'
+                      ? 'Setting up your PIN…'
+                      : 'Unlocking…'
+                }
+              />
+            ) : (
+              attemptsLeft !== null &&
+              attemptsLeft > 0 &&
+              !error && (
+                <p
+                  style={{
+                    marginTop: 12,
+                    textAlign: 'center',
+                    fontSize: tokens.typography.size.xs,
+                    color: tokens.semantic.inkMuted,
+                  }}
+                >
+                  {attemptsLeft} {attemptsLeft === 1 ? 'attempt' : 'attempts'} left before a
+                  temporary lock.
+                </p>
+              )
             )}
 
             {mode === 'create' && (
