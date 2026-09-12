@@ -181,6 +181,13 @@ at **Next.js** — `vercel.json` is at the root and already points the build at
 cannot work: the API is a long-running Express server with in-process rate
 limiting, not a set of serverless functions.
 
+Both configs install with `npm ci --include=dev`. Vercel runs the build with
+`NODE_ENV=production`, and npm then omits devDependencies — where `tailwindcss`,
+`@tailwindcss/postcss` and `typescript` live. Without the flag the install
+succeeds with 315 of 710 packages and the build dies inside PostCSS on
+`globals.css`, which reads as a CSS problem rather than a missing dependency.
+Same failure mode as the Railway build; see `nixpacks.toml`.
+
 `vercel.json` sets the build command, output directory and headers. Note that
 none of its objects may carry extra keys — Vercel validates the file against a
 strict schema and rejects an unknown property (including a `comment` key used
