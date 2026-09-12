@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   BLOCKED_PINS,
   atHandle,
@@ -30,6 +31,7 @@ import { PanelHeader, Row, Section, IconTile } from './shared';
 export function ProfilePanel() {
   const { user, isAdmin, adminRole } = useSession();
   const [sheet, setSheet] = useState<'pin' | 'security' | null>(null);
+  const router = useRouter();
 
   if (!user) return null;
 
@@ -148,7 +150,7 @@ export function ProfilePanel() {
             leading={<IconTile><ProfileIcon active /></IconTile>}
             title="Open the admin panel"
             subtitle="Manage tasks, users, withdrawals and settings"
-            onClick={() => window.location.assign('/admin')}
+            onClick={() => router.push('/admin')}
           />
         </Section>
       )}

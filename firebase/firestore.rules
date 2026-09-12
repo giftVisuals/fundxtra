@@ -1,0 +1,61 @@
+rules_version = '2';
+
+/**
+ * Fundxtra Firestore security rules.
+ *
+ * The governing decision: **no client writes, anywhere.** Every mutation goes
+ * through the API, which holds Admin SDK credentials and therefore bypasses
+ * these rules entirely. That is deliberate, and it is what lets the backend
+ * guarantee things rules cannot express — that a reward credit and its ledger
+ * row commit atomically, that an idempotency key makes a retry safe, that a
+ * campaign cannot overspend its budget, that a PIN attempt is rate limited.
+ *
+ * A rule like "a user may update their own document" would quietly undo all of
+ * that: it would let a client set its own `balanceKobo`.
+ *
+ * Reads are equally locked down, with two narrow exceptions for the public
+ * marketing site, which uses the Firebase Web SDK to show live statistics:
+ *
+ *   - `counters/publicStats` — aggregate totals only, no user data.
+ *   - `announcements` where the audience is PUBLIC or BOTH and it is published.
+ *
+ * Everything else — users, PIN hashes, transactions, withdrawals, submissions,
+ * admins, audit logs — is unreachable from any client, authenticated or not.
+ * The Mini App reads all of it through the API, where the caller's identity is
+ * verified and the response is filtered to what that caller may see.
+ */
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------------------
+    // Public read surface for the marketing site.
+    // ---------------------------------------------------------------------
+
+    // Aggregate platform statistics. Contains counts and totals only.
+    match /counters/publicStats {
+      allow get: if true;
+      allow list, write: if false;
+    }
+
+    // Published announcements intended for the public site. The audience and
+    // published checks are in the rule itself, so an APP-only announcement
+    // cannot be read from the website even if a client asks for it directly.
+    match /announcements/{announcementId} {
+      allow get, list: if resource.data.published == true
+                       && resource.data.audience in ['PUBLIC', 'BOTH'];
+      allow write: if false;
+    }
+
+    // ---------------------------------------------------------------------
+    // Everything else: no client access at all.
+    //
+    // PIN hashes deserve a specific mention: `pins/{userId}` is denied here
+    // like everything else, and it is a separate collection from `users`
+    // precisely so that no query or export over user profiles can ever carry
+    // PIN material with it.
+    // ---------------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

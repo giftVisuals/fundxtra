@@ -209,7 +209,12 @@ export function WalletPanel() {
         )}
       </Section>
 
+      {/*
+        Keyed on whether the sheet is open, so each opening starts from a
+        clean form rather than resetting state inside an effect.
+      */}
       <WithdrawSheet
+        key={sheet === 'withdraw' ? 'withdraw-open' : 'withdraw-closed'}
         open={sheet === 'withdraw'}
         onClose={() => setSheet(null)}
         wallet={wallet}
@@ -317,14 +322,6 @@ function WithdrawSheet({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [failure, setFailure] = useState<{ message: string; requestId?: string } | null>(null);
 
-  useEffect(() => {
-    if (open) {
-      setStep('form');
-      setPin('');
-      setFieldErrors({});
-      setFailure(null);
-    }
-  }, [open]);
 
   const amountKobo = useMemo(() => parseNairaInput(amount), [amount]);
   const netKobo = amountKobo === null ? null : amountKobo - wallet.withdrawals.feeKobo;

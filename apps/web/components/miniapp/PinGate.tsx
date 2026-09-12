@@ -1,7 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { BLOCKED_PINS, LIMITS, tokens } from '@fundxtra/shared';
 import { api, ApiError } from '@/lib/api';
 import { supportUrl } from '@/lib/config';
@@ -51,11 +51,21 @@ export function PinGate({
     locked ? lockMessage(lockedUntil) : null,
   );
 
-  // Clear the error as soon as the user starts correcting it, rather than
-  // leaving a stale red message under a field they are already fixing.
-  useEffect(() => {
-    if (value.length > 0 && error) setError(null);
-  }, [value, error]);
+  /**
+   * Clear the error the moment the user starts correcting it, rather than
+   * leaving a stale red message under a field they are already fixing.
+   *
+   * Done in the change handler rather than an effect watching `value`: an
+   * effect would set state synchronously on every keystroke and cause a
+   * second render for no reason.
+   */
+  const handleChange = useCallback(
+    (next: string) => {
+      setValue(next);
+      if (next.length > 0) setError(null);
+    },
+    [],
+  );
 
   const submitCreate = useCallback(
     async (confirmPin: string) => {
@@ -243,7 +253,7 @@ export function PinGate({
             <PinInput
               key={step}
               value={value}
-              onChange={setValue}
+              onChange={handleChange}
               onComplete={handleComplete}
               label={
                 mode === 'create' && step === 'confirm' ? 'Re-enter your PIN' : 'Enter your PIN'

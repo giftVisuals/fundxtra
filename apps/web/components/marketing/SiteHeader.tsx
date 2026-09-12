@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { tokens } from '@fundxtra/shared';
 
@@ -68,7 +69,7 @@ export function SiteHeader({
           padding: '14px 20px',
         }}
       >
-        <a
+        <Link
           href="/"
           aria-label="Fundxtra home"
           style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}
@@ -86,7 +87,7 @@ export function SiteHeader({
           >
             Fundxtra
           </span>
-        </a>
+        </Link>
 
         {/* Desktop links. Hidden below 880px via the media query in the
             stylesheet below, which is cheaper than a resize listener. */}

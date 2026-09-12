@@ -25,26 +25,11 @@ export function SettingsView() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  if (!data) return <AdminCard>Loading…</AdminCard>;
-  const { settings, provider } = data;
-
-  const section = <K extends keyof SystemSettings>(key: K): Record<string, unknown> =>
-    (draft[key as string] as Record<string, unknown> | undefined) ?? {};
-
-  const set = <K extends keyof SystemSettings>(key: K, field: string, value: unknown) =>
-    setDraft((current) => ({
-      ...current,
-      [key]: { ...((current[key as string] as Record<string, unknown>) ?? {}), [field]: value },
-    }));
-
-  const value = <K extends keyof SystemSettings>(key: K, field: string): unknown => {
-    const staged = section(key)[field];
-    if (staged !== undefined) return staged;
-    return (settings[key] as Record<string, unknown>)[field];
-  };
-
-  const dirty = Object.keys(draft).length > 0;
-
+  /*
+    Every hook must run before any early return, or React's hook order
+    changes between the loading render and the loaded one. `save` therefore
+    lives above the `!data` guard and reads `draft`/`reason` from closure.
+  */
   const save = useCallback(async () => {
     setBusy(true);
     setError(null);
@@ -68,6 +53,26 @@ export function SettingsView() {
       setBusy(false);
     }
   }, [draft, reason, refresh]);
+
+  if (!data) return <AdminCard>Loading…</AdminCard>;
+  const { settings, provider } = data;
+
+  const section = <K extends keyof SystemSettings>(key: K): Record<string, unknown> =>
+    (draft[key as string] as Record<string, unknown> | undefined) ?? {};
+
+  const set = <K extends keyof SystemSettings>(key: K, field: string, value: unknown) =>
+    setDraft((current) => ({
+      ...current,
+      [key]: { ...((current[key as string] as Record<string, unknown>) ?? {}), [field]: value },
+    }));
+
+  const value = <K extends keyof SystemSettings>(key: K, field: string): unknown => {
+    const staged = section(key)[field];
+    if (staged !== undefined) return staged;
+    return (settings[key] as Record<string, unknown>)[field];
+  };
+
+  const dirty = Object.keys(draft).length > 0;
 
   const nairaField = <K extends keyof SystemSettings>(
     key: K,

@@ -159,7 +159,12 @@ export function EarnPanel() {
         </Section>
       )}
 
+      {/*
+        Keyed by task id so opening a different task remounts the sheet with
+        clean state, instead of resetting five fields inside an effect.
+      */}
       <TaskSheet
+        key={openTask?.id ?? 'none'}
         task={openTask}
         onClose={() => setOpenTask(null)}
         onCompleted={handleCompleted}
@@ -373,19 +378,24 @@ function TaskSheet({
   const [proofFile, setProofFile] = useState<File | null>(null);
   const [proofError, setProofError] = useState<string | null>(null);
   const [opened, setOpened] = useState(false);
-  const openedAt = useRef<number>(Date.now());
+  /*
+    Set when the sheet opens, in the effect below — not in this initialiser.
+    `Date.now()` during render makes the render impure, and a ref initialiser
+    runs during render.
+  */
+  const openedAt = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  /*
+    Record when the sheet was opened, for the dwell signal sent with the
+    completion. State is NOT reset here — the parent gives this component a
+    `key` of the task id, so opening a different task remounts it with fresh
+    state. Resetting five pieces of state in an effect would cause a
+    cascading render on every open.
+  */
   useEffect(() => {
-    if (task) {
-      openedAt.current = Date.now();
-      setState({ kind: 'idle' });
-      setAnswer('');
-      setProofFile(null);
-      setProofError(null);
-      setOpened(false);
-    }
-  }, [task]);
+    openedAt.current = Date.now();
+  }, []);
 
   const submit = useCallback(async () => {
     if (!task) return;
@@ -447,11 +457,6 @@ function TaskSheet({
   }, [task, proofFile, answer, onCompleted]);
 
   if (!task) return null;
-
-  const dwellRemaining = Math.max(
-    0,
-    task.minimumDwellSeconds - Math.round((Date.now() - openedAt.current) / 1000),
-  );
 
   return (
     <Sheet
@@ -792,7 +797,14 @@ function TaskSheet({
               </div>
             )}
 
-            {dwellRemaining > 0 && task.userState === 'AVAILABLE' && (
+            {/*
+              Static advice rather than a live countdown. A countdown would
+              need `Date.now()` during render, and the server treats a fast
+              completion as a signal to flag for review, not a hard block —
+              so an accurate ticking number would imply a gate that does not
+              exist.
+            */}
+            {task.minimumDwellSeconds > 0 && task.userState === 'AVAILABLE' && (
               <p
                 style={{
                   marginTop: 16,

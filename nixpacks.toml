@@ -1,0 +1,25 @@
+# Railway build configuration for the Fundxtra API.
+#
+# The API is a workspace package, so the shared package must be compiled first —
+# it ships as CommonJS and the API imports its types and runtime helpers.
+#
+# numReplicas stays at 1 in railway.json for a specific reason: rate limits and
+# the PIN-attempt counters that back them are per-process (see
+# apps/api/src/lib/rate-limit.ts). Scaling horizontally multiplies the effective
+# limits by the replica count. Swap MemoryRateLimiter for a Redis-backed
+# implementation of the same interface before raising it.
+
+[phases.setup]
+nixPkgs = ["nodejs_22"]
+
+[phases.install]
+cmds = ["npm ci --include=dev"]
+
+[phases.build]
+cmds = [
+  "npm run build --workspace @fundxtra/shared",
+  "npm run build --workspace @fundxtra/api",
+]
+
+[start]
+cmd = "node apps/api/dist/index.js"

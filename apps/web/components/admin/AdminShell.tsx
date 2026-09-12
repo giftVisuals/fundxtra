@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
 import { formatNaira, tokens, type Permission } from '@fundxtra/shared';
 import { useAdmin } from '@/lib/admin-session';
@@ -120,7 +121,7 @@ export function AdminShell() {
           borderBottom: `1px solid ${tokens.semantic.border}`,
         }}
       >
-        <a href="/app" style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+        <Link href="/app" style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/brand/fundxtra-mark.png" alt="" width={24} height={20} />
           <span
@@ -133,7 +134,7 @@ export function AdminShell() {
           >
             Fundxtra
           </span>
-        </a>
+        </Link>
         <span
           style={{
             padding: '2px 8px',
@@ -203,10 +204,29 @@ export function AdminShell() {
             </div>
           </div>
 
-          {/* The admin/user view switch the brief asks for. */}
-          <AdminButton onClick={() => window.location.assign('/app')}>
+          {/*
+            The admin/user view switch. A Link rather than a location
+            assignment, so switching is a client navigation and the admin is
+            not waiting on a full page load to check what users see.
+          */}
+          <Link
+            href="/app"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              minHeight: 34,
+              padding: '0 12px',
+              background: tokens.semantic.surface,
+              color: tokens.semantic.ink,
+              border: `1px solid ${tokens.semantic.borderStrong}`,
+              borderRadius: tokens.radii.xs,
+              fontSize: tokens.typography.size.xs,
+              fontWeight: tokens.typography.weight.semibold,
+              whiteSpace: 'nowrap',
+            }}
+          >
             User view
-          </AdminButton>
+          </Link>
         </div>
       </header>
 

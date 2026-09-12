@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { tokens } from '@fundxtra/shared';
 import {
@@ -208,9 +209,20 @@ function OpenInTelegram() {
           <Button size="lg" fullWidth onClick={() => openExternal(startEarningUrl)}>
             Start earning on Telegram
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => window.location.assign('/')}>
+          <Link
+            href="/"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minHeight: 38,
+              fontSize: tokens.typography.size.sm,
+              fontWeight: tokens.typography.weight.medium,
+              color: tokens.semantic.inkMuted,
+            }}
+          >
             Learn about Fundxtra
-          </Button>
+          </Link>
         </div>
       </div>
     </CentredMessage>

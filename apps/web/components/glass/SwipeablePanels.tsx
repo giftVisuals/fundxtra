@@ -1,7 +1,7 @@
 'use client';
 
 import { AnimatePresence, motion, useReducedMotion, type PanInfo } from 'framer-motion';
-import { useCallback, useRef, type ReactNode } from 'react';
+import { useCallback, useState, type ReactNode } from 'react';
 import { tokens } from '@fundxtra/shared';
 
 /**
@@ -48,18 +48,34 @@ export function SwipeablePanels({
 }: SwipeablePanelsProps) {
   const reduceMotion = useReducedMotion();
   const activeIndex = Math.max(0, ids.indexOf(activeId));
-  /** Direction of the last change, so the panel enters from the right side. */
-  const directionRef = useRef(0);
+
+  /*
+    Which side a panel enters from.
+
+    This was a ref read during render, which is impure: a ref's value is not
+    part of the render it is read in, so the animation could disagree with the
+    panel actually being drawn. It is now derived from state the moment the
+    prop changes, using React's documented pattern for adjusting state during
+    render — and `activeId` can change from the tab bar as well as from a
+    swipe, so comparing against a remembered previous value catches both.
+  */
+  const [seen, setSeen] = useState(activeId);
+  const [direction, setDirection] = useState(0);
+
+  if (seen !== activeId) {
+    const previousIndex = ids.indexOf(seen);
+    setDirection(previousIndex === -1 || activeIndex >= previousIndex ? 1 : -1);
+    setSeen(activeId);
+  }
 
   const goTo = useCallback(
     (index: number) => {
       const clamped = Math.min(Math.max(index, 0), ids.length - 1);
       const next = ids[clamped];
       if (!next || next === activeId) return;
-      directionRef.current = clamped > activeIndex ? 1 : -1;
       onChange(next);
     },
-    [ids, activeId, activeIndex, onChange],
+    [ids, activeId, onChange],
   );
 
   const handleDragEnd = useCallback(
@@ -94,19 +110,19 @@ export function SwipeablePanels({
   }
 
   return (
-    <AnimatePresence initial={false} mode="wait" custom={directionRef.current}>
+    <AnimatePresence initial={false} mode="wait" custom={direction}>
       <motion.div
         key={activeId}
         role="tabpanel"
         id={`fx-panel-${activeId}`}
         aria-labelledby={`fx-tab-${activeId}`}
         tabIndex={0}
-        custom={directionRef.current}
+        custom={direction}
         // Enter from the side the user swiped from, so the motion agrees with
         // the gesture that caused it.
-        initial={{ opacity: 0, x: directionRef.current >= 0 ? 24 : -24 }}
+        initial={{ opacity: 0, x: direction >= 0 ? 24 : -24 }}
         animate={{ opacity: 1, x: 0 }}
-        exit={{ opacity: 0, x: directionRef.current >= 0 ? -16 : 16 }}
+        exit={{ opacity: 0, x: direction >= 0 ? -16 : 16 }}
         transition={tokens.motion.spring.panel}
         drag="x"
         dragDirectionLock

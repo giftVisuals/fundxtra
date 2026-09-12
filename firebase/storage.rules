@@ -1,0 +1,22 @@
+rules_version = '2';
+
+/**
+ * Fundxtra Cloud Storage rules.
+ *
+ * Task-proof screenshots are uploaded *through the API*, not from the browser,
+ * so the bucket needs no client write access. The API validates the file by
+ * its magic bytes rather than the client's Content-Type header, enforces the
+ * size limit, and chooses the storage path itself — which is why a user cannot
+ * pick where their file lands or overwrite someone else's proof.
+ *
+ * Reads are denied too. Admins view a proof through a short-lived signed URL
+ * minted per request by the API, so a link cannot be forwarded indefinitely
+ * and the bucket is never publicly readable.
+ */
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
