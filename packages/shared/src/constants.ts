@@ -57,12 +57,53 @@ export const ACCEPTED_PROOF_MIME_TYPES = [
 ] as const;
 
 /** Obvious PINs we refuse at creation time. */
-export const BLOCKED_PINS: readonly string[] = [
-  '0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999',
-  '1234', '2345', '3456', '4567', '5678', '6789', '7890',
-  '4321', '5432', '6543', '7654', '8765', '9876', '0987',
-  '1212', '2121', '1010', '0101', '6969', '1004', '2000',
-];
+/**
+ * PINs refused at setup.
+ *
+ * Derived rather than hand-listed, because a hand-listed set drifts into
+ * inconsistency: an earlier version of this file blocked 1010, 0101, 1212 and
+ * 2121 while allowing 2020, 3030, 4040 and 2323 — the same pattern answered
+ * two different ways, which is impossible to explain to a user told their PIN
+ * is "too easy to guess".
+ *
+ * Three categories, and only three:
+ *
+ * 1. **One digit four times** — 0000 through 9999.
+ * 2. **Four consecutive digits**, ascending or descending, including the wrap
+ *    at 7890 and 0987.
+ * 3. **A short list of notoriously common codes** that are neither: 1004 is
+ *    the single most common PIN in leaked datasets, 2580 is the straight line
+ *    down a phone keypad.
+ *
+ * Alternating pairs like 3030 are deliberately *allowed*. They are no weaker
+ * than any other arbitrary pair, and the real protection against guessing a
+ * 4-digit secret is not a denylist — it is rate limiting and the temporary
+ * lock after repeated failures, both enforced server-side. A denylist only
+ * needs to remove the handful of codes a stranger would try first.
+ */
+function buildBlockedPins(): readonly string[] {
+  const blocked = new Set<string>();
+
+  for (let digit = 0; digit <= 9; digit += 1) {
+    blocked.add(String(digit).repeat(4));
+  }
+
+  // Runs, treating the digits as a ring so 7890 and 0987 are covered.
+  for (let start = 0; start <= 9; start += 1) {
+    const up = [0, 1, 2, 3].map((offset) => (start + offset) % 10).join('');
+    const down = [0, 1, 2, 3].map((offset) => (start - offset + 10) % 10).join('');
+    blocked.add(up);
+    blocked.add(down);
+  }
+
+  for (const notorious of ['1004', '2580']) {
+    blocked.add(notorious);
+  }
+
+  return Object.freeze([...blocked].sort());
+}
+
+export const BLOCKED_PINS: readonly string[] = buildBlockedPins();
 
 /** The Telegram ID that always holds SUPER_ADMIN, independent of the database. */
 export const PRIMARY_ADMIN_TELEGRAM_ID = '6438544386';
