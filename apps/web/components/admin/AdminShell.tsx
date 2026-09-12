@@ -14,6 +14,7 @@ import { SettingsView } from './SettingsView';
 import { AdminsView } from './AdminsView';
 import { AnnouncementsView } from './AnnouncementsView';
 import { AuditView } from './AuditView';
+import { SectionBoundary } from './SectionBoundary';
 
 /**
  * Admin console.
@@ -49,6 +50,12 @@ interface ViewDefinition {
 export function AdminShell() {
   const { state, data, error, refresh, can } = useAdmin();
   const [view, setView] = useState<ViewId>('overview');
+  /*
+    Whether the section list is expanded. Only consulted below 900px, where
+    the list is a dropdown; the sidebar above that width is always open and the
+    CSS ignores this.
+  */
+  const [menuOpen, setMenuOpen] = useState(false);
 
   if (state === 'BOOTING') return <AdminMessage title="Opening the admin panel…" />;
 
@@ -107,6 +114,13 @@ export function AdminShell() {
 
   const views = allViews.filter(
     (entry) => entry.permission === null || can(entry.permission),
+  );
+
+  // Surfaced on the collapsed control, so work waiting in a section that is
+  // currently hidden is still visible.
+  const totalBadges = views.reduce(
+    (sum, entry) => sum + (typeof entry.badge === 'number' ? entry.badge : 0),
+    0,
   );
 
   return (
@@ -241,14 +255,79 @@ export function AdminShell() {
       */}
       <div className="fx-admin-layout">
         <nav aria-label="Admin sections" className="fx-admin-nav">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {/*
+            On a phone the nine sections stacked as buttons filled the entire
+            first screen before any content appeared. Below 900px they collapse
+            into a single control showing the current section, which expands to
+            pick another; above it, the sidebar is the better shape because an
+            operator moving between sections benefits from seeing all of them.
+
+            Both render the same list, so there is one source of truth for
+            labels, badges and the active state.
+          */}
+          <button
+            type="button"
+            className="fx-admin-nav-toggle"
+            aria-expanded={menuOpen}
+            aria-controls="fx-admin-sections"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <span style={{ flex: 1, textAlign: 'left', fontWeight: tokens.typography.weight.semibold }}>
+              {views.find((entry) => entry.id === view)?.label ?? 'Sections'}
+            </span>
+            {totalBadges > 0 && (
+              <span
+                style={{
+                  minWidth: 18,
+                  padding: '1px 5px',
+                  marginRight: 8,
+                  background: tokens.colors.danger.base,
+                  color: '#fff',
+                  borderRadius: tokens.radii.pill,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  textAlign: 'center',
+                }}
+              >
+                {totalBadges}
+              </span>
+            )}
+            <svg
+              aria-hidden="true"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2.4}
+              strokeLinecap="round"
+              style={{
+                transform: menuOpen ? 'rotate(180deg)' : 'none',
+                transition: 'transform 160ms ease',
+              }}
+            >
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+
+          <div
+            id="fx-admin-sections"
+            className="fx-admin-sections"
+            data-open={menuOpen ? 'true' : 'false'}
+            style={{ display: 'flex', flexDirection: 'column', gap: 2 }}
+          >
             {views.map((entry) => {
               const active = entry.id === view;
               return (
                 <button
                   key={entry.id}
                   type="button"
-                  onClick={() => setView(entry.id)}
+                  onClick={() => {
+                    setView(entry.id);
+                    // Collapse after a choice: on a phone the menu covers the
+                    // content the choice was meant to reveal.
+                    setMenuOpen(false);
+                  }}
                   aria-current={active ? 'page' : undefined}
                   style={{
                     display: 'flex',
@@ -309,6 +388,11 @@ export function AdminShell() {
         </nav>
 
         <main style={{ minWidth: 0 }}>
+          {/*
+            Keyed on the section, so moving to another one clears a failure
+            instead of leaving the console stuck on it.
+          */}
+          <SectionBoundary key={view} section={views.find((entry) => entry.id === view)?.label ?? view}>
           {view === 'overview' && <OverviewView />}
           {view === 'users' && <UsersView />}
           {view === 'submissions' && <SubmissionsView />}
@@ -318,6 +402,7 @@ export function AdminShell() {
           {view === 'settings' && <SettingsView />}
           {view === 'admins' && <AdminsView />}
           {view === 'audit' && <AuditView />}
+          </SectionBoundary>
         </main>
       </div>
 
@@ -330,9 +415,30 @@ export function AdminShell() {
           margin: 0 auto;
           padding: 18px;
         }
+        /* Phone: one control, expanded on demand. */
+        .fx-admin-nav-toggle {
+          display: flex;
+          align-items: center;
+          width: 100%;
+          min-height: 44px;
+          padding: 0 12px;
+          margin-bottom: 6px;
+          background: #fff;
+          color: var(--fx-brand-ink);
+          border: 1px solid var(--fx-border);
+          border-radius: var(--fx-radius-sm);
+          font-size: var(--fx-text-sm);
+          box-shadow: var(--fx-shadow-xs);
+        }
+        .fx-admin-sections[data-open='false'] { display: none !important; }
+
         @media (min-width: 900px) {
           .fx-admin-layout { grid-template-columns: 208px minmax(0, 1fr); }
           .fx-admin-nav { position: sticky; top: 72px; align-self: start; }
+          /* The sidebar is always open at this width, so the toggle would be
+             a control with nothing to do. */
+          .fx-admin-nav-toggle { display: none; }
+          .fx-admin-sections[data-open='false'] { display: flex !important; }
         }
       `}</style>
     </div>

@@ -148,7 +148,12 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   }, [authenticate]);
 
   const can = useCallback(
-    (permission: Permission) => Boolean(data?.admin.permissions.includes(permission)),
+    // Optional all the way down: a response missing `admin` would otherwise
+    // throw during render and replace the console with a blank error page,
+    // which hides the very diagnostics an operator needs. Absent permissions
+    // mean "cannot", which is the safe reading anyway — and every one of these
+    // endpoints re-checks server-side regardless.
+    (permission: Permission) => Boolean(data?.admin?.permissions?.includes(permission)),
     [data],
   );
 
