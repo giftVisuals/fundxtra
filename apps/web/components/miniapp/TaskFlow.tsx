@@ -54,6 +54,16 @@ export function TaskFlow({
 }) {
   const reduceMotion = useReducedMotion();
 
+  /*
+    A task can be opened from the "already handled" list, and it must not offer
+    itself again when it does. The sheet this replaced gated its buttons on
+    this and the rewrite dropped it, which is how a completed task came back
+    looking available — the server refused a second attempt, but only after the
+    user had done the whole thing again, which reads as the first one not
+    having counted.
+  */
+  const openForCompletion = task.userState === 'AVAILABLE';
+
   const needsProof = task.requiresProof;
   const needsAnswer = task.verification === 'MANUAL_REVIEW';
   const steps: Step[] = needsProof ? ['brief', 'proof', 'confirm'] : ['brief', 'confirm'];
@@ -246,7 +256,7 @@ export function TaskFlow({
           style={{ display: 'grid', gap: 16 }}
         >
           {step === 'brief' && (
-            <BriefStep task={task} opened={opened} onOpen={() => {
+            <BriefStep task={task} opened={opened || !openForCompletion} onOpen={() => {
               setOpened(true);
               haptic.light();
               openExternal(task.targetUrl as string);
@@ -292,7 +302,11 @@ export function TaskFlow({
         </motion.div>
       </AnimatePresence>
 
-      {step !== 'done' && (
+      {!openForCompletion && (
+        <ClosedNotice state={task.userState} reason={task.rejectionReason} onClose={onClose} />
+      )}
+
+      {step !== 'done' && openForCompletion && (
         <Button
           fullWidth
           size="lg"
@@ -317,6 +331,72 @@ export function TaskFlow({
               : 'Continue'}
         </Button>
       )}
+    </div>
+  );
+}
+
+/**
+ * Why this task cannot be done right now.
+ *
+ * Shown instead of the submit button rather than alongside it. A disabled
+ * button with an explanation beside it still reads as "try again"; no button
+ * with a sentence reads as an answer.
+ */
+function ClosedNotice({
+  state,
+  reason,
+  onClose,
+}: {
+  state: TaskListItem['userState'];
+  reason: string | null;
+  onClose: () => void;
+}) {
+  const copy: Record<string, { title: string; body: string }> = {
+    COMPLETED: {
+      title: 'You have done this one',
+      body: 'It is finished and the reward is in your wallet. Nothing more to do here.',
+    },
+    PENDING_REVIEW: {
+      title: 'Waiting for review',
+      body: 'Your submission is with our team. You will get a message either way, usually within 24 hours.',
+    },
+    REJECTED: {
+      title: 'This was turned down',
+      body: reason ?? 'Our team could not accept this submission. Nothing was deducted.',
+    },
+    UNAVAILABLE: {
+      title: 'Not available right now',
+      body: 'This campaign is closed or fully claimed. New ones are added regularly.',
+    },
+  };
+
+  const message = copy[state] ?? copy.UNAVAILABLE!;
+
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      <Card tone={state === 'REJECTED' ? 'plain' : 'brand'} padding={14}>
+        <p
+          style={{
+            fontSize: tokens.typography.size.sm,
+            fontWeight: tokens.typography.weight.semibold,
+          }}
+        >
+          {message.title}
+        </p>
+        <p
+          style={{
+            marginTop: 4,
+            fontSize: tokens.typography.size.sm,
+            lineHeight: tokens.typography.leading.relaxed,
+            color: tokens.semantic.inkMuted,
+          }}
+        >
+          {message.body}
+        </p>
+      </Card>
+      <Button variant="secondary" fullWidth size="lg" onClick={onClose}>
+        Back to tasks
+      </Button>
     </div>
   );
 }

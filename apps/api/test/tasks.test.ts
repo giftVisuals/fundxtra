@@ -37,7 +37,14 @@ vi.mock('../src/lib/telegram-bot', () => ({
 }));
 
 const { completeTask, reviewSubmission } = await import('../src/services/completions');
-const { taskAvailability, budgetView, mapTask, topUpBudget, updateTask } = await import('../src/services/tasks');
+const {
+  taskAvailability,
+  budgetView,
+  mapTask,
+  topUpBudget,
+  updateTask,
+  listTasksForUser,
+} = await import('../src/services/tasks');
 const { mapUser } = await import('../src/services/users');
 
 function seedUser(id: string, overrides: Record<string, unknown> = {}) {
@@ -587,5 +594,69 @@ describe('editing a campaign', () => {
     await expect(updateTask('t1', { verification: 'HONOUR' })).rejects.toMatchObject({
       fields: { verification: expect.stringMatching(/waiting/i) },
     });
+  });
+});
+
+/**
+ * A task must not come back after you have done it.
+ *
+ * Reported from production: a screenshot task was completed and then appeared
+ * as available again. The service refuses a second completion, so nothing
+ * could actually be claimed twice — but a task offering itself again after you
+ * did it is indistinguishable from the first attempt not having counted, and
+ * that is the point at which people start submitting the same screenshot over
+ * and over.
+ */
+describe('a task the user has already done', () => {
+  async function seedApprovedFlow() {
+    seedUser('500', 0);
+    seedTask('shot', {
+      verification: 'SCREENSHOT', requiresProof: true,
+      rewardKobo: 4_000, budgetKobo: 40_000, maxCompletions: 10, perUserLimit: 1,
+    });
+    return completeTask({
+      user: user('500'), taskId: 'shot', proofPath: 'https://i.ibb.co/a/b.png', dwellSeconds: 30,
+    });
+  }
+
+  it('shows as waiting for review while the screenshot is pending', async () => {
+    await seedApprovedFlow();
+
+    const listed = await listTasksForUser('500');
+    const row = listed.find((entry) => entry.id === 'shot');
+
+    expect(row?.userState).toBe('PENDING_REVIEW');
+  });
+
+  it('shows as completed once the screenshot is approved', async () => {
+    const submitted = await seedApprovedFlow();
+    expect(submitted.state).toBe('PENDING_REVIEW');
+
+    const submissionId = Object.keys(store.snapshot())
+      .find((path) => path.startsWith('taskSubmissions/'))
+      ?.split('/')[1];
+    expect(submissionId).toBeTruthy();
+
+    await reviewSubmission({
+      submissionId: submissionId!, decision: 'APPROVE', reviewerId: 'admin-1',
+    });
+
+    const listed = await listTasksForUser('500');
+    const row = listed.find((entry) => entry.id === 'shot');
+
+    // The complaint: this came back as AVAILABLE.
+    expect(row?.userState).toBe('COMPLETED');
+  });
+
+  it('refuses a second attempt outright', async () => {
+    const submitted = await seedApprovedFlow();
+    expect(submitted.state).toBe('PENDING_REVIEW');
+
+    await expect(
+      completeTask({
+        user: user('500'), taskId: 'shot',
+        proofPath: 'https://i.ibb.co/a/second.png', dwellSeconds: 30,
+      }),
+    ).rejects.toThrow();
   });
 });

@@ -47,10 +47,26 @@ export function invalidateResources(prefix?: string): void {
   }
 }
 
-/** Fetch through the cache, sharing one request between simultaneous callers. */
-async function load<T>(key: string): Promise<T> {
-  const existing = inFlight.get(key);
-  if (existing) return existing as Promise<T>;
+/**
+ * Fetch through the cache, sharing one request between simultaneous callers.
+ *
+ * `force` is the important half, and leaving it out was a real bug: a refresh
+ * after completing a task joined whatever request was already in flight — and
+ * that request had been sent *before* the task was completed. So the list came
+ * back showing the task still available, and that answer was then cached for a
+ * minute. From the user's side, the task they had just done offered itself
+ * again, which looks exactly like their submission not having counted.
+ *
+ * Sharing is right for "several screens want this at once" and wrong for "this
+ * changed, get it again". A forced load never joins an existing request, and
+ * replaces the shared one so anybody who joins afterwards gets the fresh
+ * answer rather than the stale one.
+ */
+async function load<T>(key: string, options: { force?: boolean } = {}): Promise<T> {
+  if (!options.force) {
+    const existing = inFlight.get(key);
+    if (existing) return existing as Promise<T>;
+  }
 
   const request = api
     .get<T>(key)
@@ -59,7 +75,9 @@ async function load<T>(key: string): Promise<T> {
       return value;
     })
     .finally(() => {
-      inFlight.delete(key);
+      // Only clear the slot if it is still ours: a later forced load may have
+      // replaced it, and that one is the answer newcomers should be given.
+      if (inFlight.get(key) === request) inFlight.delete(key);
     });
 
   inFlight.set(key, request);
@@ -91,9 +109,9 @@ export function useResource<T>(key: string, options: { ttlMs?: number } = {}): R
     };
   }, []);
 
-  const fetchNow = useCallback(async () => {
+  const fetchNow = useCallback(async (options: { force?: boolean } = {}) => {
     try {
-      const value = await load<T>(key);
+      const value = await load<T>(key, options);
       if (alive.current) {
         setData(value);
         setError(null);
@@ -115,7 +133,9 @@ export function useResource<T>(key: string, options: { ttlMs?: number } = {}): R
 
   const reload = useCallback(async () => {
     cache.delete(key);
-    await fetchNow();
+    // Forced: a reload exists because something changed, so joining a request
+    // that was sent before the change would defeat the whole point of it.
+    await fetchNow({ force: true });
   }, [key, fetchNow]);
 
   return { data, error, loading: data === null && error === null, reload };
