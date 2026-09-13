@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import {
   TRANSACTION_LABELS,
   formatNaira,
@@ -10,7 +10,15 @@ import {
 } from '@fundxtra/shared';
 import { Button } from '@/components/ui';
 import { haptic } from '@/lib/telegram';
-import { deliverReceipt, renderReceiptPng, type ReceiptSection } from '@/lib/receipt-image';
+import {
+  canShareImages,
+  renderReceiptPng,
+  shareReceipt,
+  type ReceiptImageInput,
+  type ReceiptSection,
+} from '@/lib/receipt-image';
+import { Logo } from '@/components/ui/Logo';
+import { config } from '@/lib/config';
 
 /**
  * A receipt for one transaction.
@@ -99,12 +107,26 @@ function toneFor(receipt: TransactionReceipt): Tone {
   return good;
 }
 
+interface RenderState {
+  /** The input this result was painted from, so a stale one can be ignored. */
+  input: ReceiptImageInput;
+  blob: Blob | null;
+  failed: boolean;
+}
+
+/** The share capability never changes, so there is nothing to subscribe to. */
+const subscribeNever = () => () => {
+  /* no updates */
+};
+
 export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
-  const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
 
   const { transaction, withdrawal } = receipt;
-  const status = toneFor(receipt);
+  // Memoised, not just computed: it feeds the input the receipt image is
+  // painted from, and a fresh object every render would restart that render
+  // every render.
+  const status = useMemo(() => toneFor(receipt), [receipt]);
   const credit = transaction.direction === 'CREDIT';
 
   const sections = useMemo<ReceiptSection[]>(() => {
@@ -163,44 +185,96 @@ export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
     return built;
   }, [withdrawal, transaction]);
 
-  const save = useCallback(async () => {
-    setBusy(true);
-    setSaved(null);
-    try {
-      const blob = await renderReceiptPng({
-        kind: withdrawal ? 'Withdrawal receipt' : 'Transaction receipt',
-        statusLabel: status.label,
-        statusTone: status.tone,
-        amountKobo: withdrawal ? withdrawal.amountKobo : Math.abs(transaction.amountKobo),
-        ...(credit ? { amountPrefix: '+' } : {}),
-        amountInWords: nairaInWords(
-          withdrawal ? withdrawal.amountKobo : Math.abs(transaction.amountKobo),
-        ),
-        sections,
-        footer: `Electronic receipt — no signature required. Quote the reference to ${receipt.supportHandle} if anything looks wrong.`,
-        issuedAt: formatMoment(receipt.issuedAt),
+  /*
+    The image is painted as soon as the receipt is on screen, not when the
+    button is tapped. iOS only allows the share sheet to open while the tap
+    that asked for it is still live, and that permission expires across an
+    await — so rendering first is what makes the sheet actually appear rather
+    than the tap silently doing nothing. It also means the button is instant.
+  */
+  const [render, setRender] = useState<RenderState | null>(null);
+
+  /*
+    Whether this browser can put a *file* into a share sheet is a browser
+    answer, and reading it during render would disagree with the server-rendered
+    HTML. useSyncExternalStore is how React asks that question safely: the
+    server says no, the client re-reads after hydration, and no effect has to
+    push it into state.
+  */
+  const canShare = useSyncExternalStore(subscribeNever, canShareImages, () => false);
+
+  const reference = withdrawal ? withdrawal.id : transaction.id;
+
+  const imageInput = useMemo(
+    () => ({
+      kind: withdrawal ? 'Withdrawal receipt' : 'Transaction receipt',
+      statusLabel: status.label,
+      statusTone: status.tone,
+      amountKobo: withdrawal ? withdrawal.amountKobo : Math.abs(transaction.amountKobo),
+      ...(credit ? { amountPrefix: '+' } : {}),
+      amountInWords: nairaInWords(
+        withdrawal ? withdrawal.amountKobo : Math.abs(transaction.amountKobo),
+      ),
+      sections,
+      footer: `Electronic receipt — no signature required. Quote the reference to ${receipt.supportHandle} if anything looks wrong.`,
+      source: RECEIPT_SOURCE,
+      issuedAt: formatMoment(receipt.issuedAt),
+    }),
+    [withdrawal, transaction, status, credit, sections, receipt],
+  );
+
+  useEffect(() => {
+    let abandoned = false;
+
+    renderReceiptPng(imageInput)
+      .then((blob) => {
+        if (!abandoned) setRender({ input: imageInput, blob, failed: false });
+      })
+      .catch(() => {
+        if (!abandoned) setRender({ input: imageInput, blob: null, failed: true });
       });
 
-      const route = await deliverReceipt(
-        blob,
-        `fundxtra-receipt-${withdrawal ? withdrawal.id : transaction.id}.png`,
-      );
+    return () => {
+      abandoned = true;
+    };
+  }, [imageInput]);
+
+  /*
+    Read back through the input it was painted from, rather than cleared by the
+    effect when the receipt changes. Clearing would mean writing state during
+    an effect, and it would also leave a window where the stale image is still
+    on offer — this way a result that does not belong to the receipt on screen
+    simply does not count as one.
+  */
+  const current = render?.input === imageInput ? render : null;
+  const image = current?.blob ?? null;
+  const imageFailed = current?.failed ?? false;
+
+  const share = useCallback(() => {
+    if (!image) return;
+    setNote(null);
+
+    void shareReceipt(
+      image,
+      `fundxtra-receipt-${reference}.png`,
+      `${withdrawal ? 'Withdrawal' : 'Transaction'} receipt — ${RECEIPT_SOURCE}`,
+    ).then((route) => {
+      if (route === 'cancelled') return;
+      if (route === 'unavailable') {
+        haptic.error();
+        setNote('Your browser blocked it. A screenshot works just as well.');
+        return;
+      }
       haptic.success();
-      // Says what actually happened, rather than claiming a download always.
-      setSaved(
+      // Says what actually happened. The old version claimed a download every
+      // time, including inside Telegram, where no download ever started.
+      setNote(
         route === 'shared'
-          ? 'Shared.'
-          : route === 'downloaded'
-            ? 'Saved to your downloads.'
-            : 'Opened in a new tab — long-press to save it.',
+          ? 'Shared. Choose “Save image” in the sheet to keep a copy.'
+          : 'Opened in a new tab — long-press the image to save it.',
       );
-    } catch {
-      haptic.error();
-      setSaved('Could not make the image on this device. Screenshot works too.');
-    } finally {
-      setBusy(false);
-    }
-  }, [withdrawal, transaction, status, credit, sections, receipt]);
+    });
+  }, [image, reference, withdrawal]);
 
   const amountKobo = withdrawal ? withdrawal.amountKobo : Math.abs(transaction.amountKobo);
 
@@ -209,7 +283,9 @@ export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
       <div className="fx-receipt" style={receiptStyle}>
         <div style={headStyle}>
           <div style={brandRowStyle}>
-            <span aria-hidden="true" style={glyphStyle}>F</span>
+            <span style={glyphStyle}>
+              <Logo size={16} />
+            </span>
             <span style={{ fontSize: tokens.typography.size.base, fontWeight: tokens.typography.weight.bold, color: tokens.semantic.brandInk }}>
               Fundxtra
             </span>
@@ -303,14 +379,28 @@ export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
             Electronic receipt — no signature required. Quote the reference to{' '}
             {receipt.supportHandle} if anything looks wrong.
           </p>
+          {/* Where the receipt came from, so it stands on its own once shared. */}
+          <p style={sourceStyle}>{RECEIPT_SOURCE}</p>
         </div>
       </div>
 
-      <Button variant="secondary" fullWidth onClick={() => void save()} loading={busy}>
-        {busy ? 'Making the image' : 'Save receipt as image'}
+      <Button
+        variant="secondary"
+        fullWidth
+        onClick={share}
+        loading={!image && !imageFailed}
+        disabled={imageFailed}
+      >
+        {imageFailed
+          ? 'Screenshot works just as well'
+          : !image
+            ? 'Preparing receipt'
+            : canShare
+              ? 'Share receipt'
+              : 'Open receipt image'}
       </Button>
 
-      {saved && (
+      {note && (
         <p
           role="status"
           style={{
@@ -319,12 +409,30 @@ export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
             color: tokens.semantic.inkMuted,
           }}
         >
-          {saved}
+          {note}
         </p>
       )}
     </div>
   );
 }
+
+/**
+ * Where the receipt came from.
+ *
+ * A shared receipt outlives the app it was made in: it gets forwarded, saved
+ * to a gallery, sent to somebody who has never heard of Fundxtra. Without this
+ * it is an image of some numbers. With it, whoever is holding it can get to the
+ * bot and check.
+ */
+const RECEIPT_SOURCE = `${config.siteUrl.replace(/^https?:\/\//, '')} · @${config.botUsername}`;
+
+const sourceStyle: React.CSSProperties = {
+  marginTop: 8,
+  fontSize: tokens.typography.size['2xs'],
+  fontWeight: tokens.typography.weight.semibold,
+  letterSpacing: '0.04em',
+  color: tokens.semantic.brandInk,
+};
 
 const receiptStyle: React.CSSProperties = {
   background: tokens.semantic.surface,
@@ -358,8 +466,6 @@ const glyphStyle: React.CSSProperties = {
   borderRadius: 8,
   background: tokens.semantic.brand,
   color: '#fff',
-  fontSize: 13,
-  fontWeight: tokens.typography.weight.bold,
 };
 
 const kindStyle: React.CSSProperties = {
