@@ -19,6 +19,7 @@ import { listReferrals } from './referrals';
 import { listUserWithdrawals, pendingWithdrawalTotals } from './withdrawals';
 import { listUserRedemptions } from './rewards';
 import { getSignupSourceCounts } from './stats';
+import { notifyBalanceAdjusted } from './notify';
 import { newUuid } from '../lib/ids';
 
 /**
@@ -176,6 +177,20 @@ export async function adjustBalance(input: {
     { userId: user.id, amountKobo: input.amountKobo, adminId: input.actor.telegramId },
     'Balance manually adjusted',
   );
+
+  /*
+    Told after the money has committed, never before: a notification about a
+    credit that then failed to post is worse than no notification. Sending is
+    fire-and-forget inside notify, so Telegram cannot fail this call.
+  */
+  notifyBalanceAdjusted({
+    telegramId: user.telegramId,
+    firstName: user.firstName,
+    amountKobo: input.amountKobo,
+    balanceAfterKobo: result.balanceAfterKobo,
+    reason: input.reason,
+  });
+
   return { transactionId: result.transaction.id, balanceAfterKobo: result.balanceAfterKobo };
 }
 

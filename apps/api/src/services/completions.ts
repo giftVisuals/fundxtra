@@ -18,6 +18,7 @@ import { idempotencyKey, postEntryIn } from './ledger';
 import { recordSecurityEvent } from './security';
 import { getSettings } from './settings';
 import { bumpStats } from './stats';
+import { notifyTaskApproved, notifyTaskRejected } from './notify';
 import { flagUser } from './users';
 import {
   commitPendingIn,
@@ -410,7 +411,15 @@ export async function reviewSubmission(input: {
           reviewedAt: now,
           rejectionReason: input.reason ?? 'Proof did not show the task was completed',
         });
-        return { status: 'REJECTED' as SubmissionStatus, rewardKobo: submission.rewardKobo, transactionId: null };
+        return {
+          status: 'REJECTED' as SubmissionStatus,
+          rewardKobo: submission.rewardKobo,
+          transactionId: null,
+          telegramId: submission.userTelegramId,
+          taskTitle: submission.taskTitle,
+          reason: input.reason ?? 'Proof did not show the task was completed',
+          balanceAfterKobo: 0,
+        };
       }
 
       const entry = await postEntryIn(tx, {
@@ -455,11 +464,37 @@ export async function reviewSubmission(input: {
         status: 'APPROVED' as SubmissionStatus,
         rewardKobo: submission.rewardKobo,
         transactionId: entry.transaction.id,
+        telegramId: submission.userTelegramId,
+        taskTitle: submission.taskTitle,
+        reason: '',
+        balanceAfterKobo: entry.balanceAfterKobo,
       };
     });
 
     if (result.status === 'APPROVED') {
       bumpStats({ totalTasksCompleted: 1, totalRewardsEarnedKobo: result.rewardKobo });
+    }
+
+    /*
+      Told after the decision has committed. A rejection is notified too: a
+      submission that silently never resolves is the review experience users
+      complain about, and the message says plainly that nothing was deducted.
+    */
+    if (result.telegramId) {
+      if (result.status === 'APPROVED') {
+        notifyTaskApproved({
+          telegramId: result.telegramId,
+          taskTitle: result.taskTitle,
+          rewardKobo: result.rewardKobo,
+          balanceAfterKobo: result.balanceAfterKobo,
+        });
+      } else {
+        notifyTaskRejected({
+          telegramId: result.telegramId,
+          taskTitle: result.taskTitle,
+          reason: result.reason,
+        });
+      }
     }
     logger.info(
       { submissionId: input.submissionId, decision: input.decision, reviewerId: input.reviewerId },

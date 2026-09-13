@@ -16,6 +16,7 @@ import { idempotencyKey, postEntryIn } from './ledger';
 import { getSettings } from './settings';
 import { recordSecurityEvent } from './security';
 import { bumpStats } from './stats';
+import { notifyReferralQualified } from './notify';
 import { flagUser, findUserByReferralCode } from './users';
 
 /**
@@ -155,6 +156,10 @@ export interface QualificationResult {
   rewardKobo?: Kobo;
   referrerId?: string;
   transactionId?: string;
+  /** Carried out of the transaction so the referrer can be notified. */
+  referrerTelegramId?: string | undefined;
+  balanceAfterKobo?: Kobo;
+  qualifiedCount?: number;
 }
 
 /**
@@ -224,6 +229,12 @@ export async function qualifyReferral(referredUserId: string): Promise<Qualifica
       rewardKobo,
       referrerId,
       transactionId: entry.transaction.id,
+      // Carried out of the transaction so the referrer can be told without a
+      // second read, and so the figures quoted are the committed ones.
+      referrerTelegramId: referrerSnapshot.get('telegramId') as string | undefined,
+      balanceAfterKobo: entry.balanceAfterKobo,
+      qualifiedCount:
+        ((referrerSnapshot.get('qualifiedReferralCount') as number | undefined) ?? 0) + 1,
     };
   });
 
@@ -233,6 +244,20 @@ export async function qualifyReferral(referredUserId: string): Promise<Qualifica
       { referrerId: result.referrerId, referredId: referredUserId, rewardKobo: result.rewardKobo },
       'Referral qualified and reward credited',
     );
+
+    /*
+      The referrer is the one who needs telling: their friend finished
+      onboarding somewhere they cannot see, and the reward arriving silently
+      is how a referral programme feels broken even when it works.
+    */
+    if (result.referrerTelegramId) {
+      notifyReferralQualified({
+        telegramId: result.referrerTelegramId,
+        rewardKobo: result.rewardKobo ?? 0,
+        balanceAfterKobo: result.balanceAfterKobo ?? 0,
+        qualifiedCount: result.qualifiedCount ?? 1,
+      });
+    }
   }
   return result;
 }

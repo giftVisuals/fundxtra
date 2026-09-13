@@ -20,6 +20,7 @@ import { nowIso, startOfPlatformDay, toIso, toIsoRequired } from '../lib/time';
 import { idempotencyKey, postEntryIn, reverseEntry } from './ledger';
 import { getSettings, withdrawalAvailability } from './settings';
 import { bumpStats } from './stats';
+import { notifyWithdrawalPaid, notifyWithdrawalReturned } from './notify';
 import { flagUser } from './users';
 
 /**
@@ -246,8 +247,28 @@ export async function transitionWithdrawal(input: {
       { withdrawalId: withdrawal.id, status: input.status },
       'Withdrawal reversed and balance restored',
     );
+
+    /*
+      The first question anyone asks about a refused payout is whether the
+      money is gone. Answering it unprompted, with the restored balance, is
+      worth more than any other notification here.
+    */
+    notifyWithdrawalReturned({
+      telegramId: withdrawal.userTelegramId,
+      amountKobo: withdrawal.amountKobo,
+      balanceAfterKobo: reversal.balanceAfterKobo,
+      reason: input.reason ?? `Withdrawal ${input.status.toLowerCase()}`,
+    });
   } else if (input.status === 'COMPLETED') {
     bumpStats({ totalPaidOutKobo: withdrawal.amountKobo });
+
+    notifyWithdrawalPaid({
+      telegramId: withdrawal.userTelegramId,
+      netKobo: withdrawal.netKobo,
+      bankName: withdrawal.bank.bankName,
+      accountNumber: withdrawal.bank.accountNumber,
+      reference: withdrawal.id,
+    });
   }
 
   return { ...withdrawal, status: input.status };

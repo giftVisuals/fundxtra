@@ -112,8 +112,112 @@ export function UsersView() {
         </AdminCard>
       )}
 
-      <AdminCard title={users ? `${users.length} shown` : 'Loading…'} padded={false}>
-        <Table
+      {/*
+        Two presentations of the same list.
+
+        The table has nine columns, so on a phone it scrolls sideways and the
+        Open button — the only way into a user's account, and therefore the only
+        way to adjust a balance — sits off-screen. Below 780px each user becomes
+        a card with the action in reach. Both render from the same array, so
+        neither can show a different set.
+      */}
+      <div className="fx-users-cards">
+        <AdminCard title={users ? `${String(users.length)} shown` : 'Loading…'}>
+          {users !== null && users.length === 0 ? (
+            <p style={{ fontSize: tokens.typography.size.sm, color: tokens.semantic.inkSubtle }}>
+              No accounts match that search.
+            </p>
+          ) : (
+            <div style={{ display: 'grid', gap: 10 }}>
+              {(users ?? []).map((user) => (
+                <div
+                  key={user.id}
+                  style={{
+                    display: 'grid',
+                    gap: 10,
+                    padding: 12,
+                    background: tokens.semantic.surface,
+                    border: `1px solid ${tokens.semantic.border}`,
+                    borderRadius: tokens.radii.md,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: tokens.typography.weight.semibold }}>
+                        {user.firstName} {user.lastName ?? ''}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: tokens.typography.size['2xs'],
+                          color: tokens.semantic.inkSubtle,
+                          fontFamily: tokens.typography.fontMono,
+                        }}
+                      >
+                        {user.telegramId}
+                        {user.username ? ` · ${atHandle(user.username)}` : ''}
+                      </div>
+                    </div>
+                    <Pill
+                      tone={
+                        user.status === 'ACTIVE'
+                          ? 'success'
+                          : user.status === 'SUSPENDED'
+                            ? 'warning'
+                            : 'danger'
+                      }
+                    >
+                      {USER_STATUS_LABELS[user.status]}
+                    </Pill>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(3, 1fr)',
+                      gap: 8,
+                      fontSize: tokens.typography.size['2xs'],
+                      color: tokens.semantic.inkSubtle,
+                    }}
+                  >
+                    <span>
+                      Balance
+                      <strong
+                        className="fx-tabular"
+                        style={{ display: 'block', fontSize: tokens.typography.size.sm, color: tokens.semantic.ink }}
+                      >
+                        {formatNaira(user.balanceKobo)}
+                      </strong>
+                    </span>
+                    <span>
+                      Tasks
+                      <strong style={{ display: 'block', fontSize: tokens.typography.size.sm, color: tokens.semantic.ink }}>
+                        {user.tasksCompleted}
+                      </strong>
+                    </span>
+                    <span>
+                      Referrals
+                      <strong style={{ display: 'block', fontSize: tokens.typography.size.sm, color: tokens.semantic.ink }}>
+                        {user.qualifiedReferralCount}
+                      </strong>
+                    </span>
+                  </div>
+
+                  <AdminButton
+                    tone={selected === user.id ? 'default' : 'primary'}
+                    onClick={() => setSelected(selected === user.id ? null : user.id)}
+                  >
+                    {selected === user.id ? 'Close account' : 'Open account'}
+                  </AdminButton>
+                </div>
+              ))}
+            </div>
+          )}
+        </AdminCard>
+      </div>
+
+      <div className="fx-users-table">
+        <AdminCard title={users ? `${String(users.length)} shown` : 'Loading…'} padded={false}>
+          <Table
           columns={['User', 'Telegram ID', 'Status', 'Balance', 'Earned', 'Tasks', 'Referrals', 'Risk', '']}
           empty={users !== null && users.length === 0}
         >
@@ -177,8 +281,17 @@ export function UsersView() {
               </Td>
             </tr>
           ))}
-        </Table>
-      </AdminCard>
+          </Table>
+        </AdminCard>
+      </div>
+
+      <style>{`
+        .fx-users-table { display: none; }
+        @media (min-width: 780px) {
+          .fx-users-cards { display: none; }
+          .fx-users-table { display: block; }
+        }
+      `}</style>
 
       {selected && (
         <UserDetail
@@ -449,7 +562,36 @@ function UserDetail({
       )}
 
       {canAdjust && (
-        <AdminCard title="Manual balance adjustment">
+        <AdminCard title="Add or remove balance">
+          {/*
+            The balance is restated here rather than only at the top of the
+            page: this is where money is moved, and the figure it is being
+            moved from should not require a scroll to check.
+          */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              justifyContent: 'space-between',
+              gap: 12,
+              marginBottom: 12,
+              padding: '10px 12px',
+              background: tokens.colors.cocoa[50],
+              border: `1px solid ${tokens.colors.cocoa[200]}`,
+              borderRadius: tokens.radii.sm,
+            }}
+          >
+            <span style={{ fontSize: tokens.typography.size.xs, color: tokens.semantic.brandInk }}>
+              {user.firstName}&rsquo;s balance now
+            </span>
+            <strong
+              className="fx-tabular"
+              style={{ fontSize: tokens.typography.size.lg, color: tokens.semantic.ink }}
+            >
+              {formatNaira(user.balanceKobo)}
+            </strong>
+          </div>
+
           <p
             style={{
               marginBottom: 12,
@@ -460,7 +602,8 @@ function UserDetail({
           >
             This creates a normal ledger entry attributed to you and writes an audit record
             before the money moves. A reason is mandatory — there are no silent financial
-            changes on Fundxtra.
+            changes on Fundxtra. The user is messaged on Telegram with the amount, their new
+            balance and the reason you give, so write it as something they can read.
           </p>
           <div
             style={{
