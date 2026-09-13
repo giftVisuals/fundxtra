@@ -1,12 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   LIMITS,
   TASK_CATEGORY_LABELS,
   VERIFICATION_LABELS,
   formatNaira,
-  normaliseTargetUrl,
   parseNairaInput,
   percentageOf,
   taskLink,
@@ -273,9 +272,6 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
   const [budget, setBudget] = useState('');
   const [targetUrl, setTargetUrl] = useState('');
   const [chatId, setChatId] = useState('');
-  // The same normalisation the API applies on save, so what is shown here is
-  // what gets stored rather than a guess about it.
-  const resolvedTargetUrl = useMemo(() => normaliseTargetUrl(targetUrl), [targetUrl]);
   const [sponsorName, setSponsorName] = useState('');
   const [dwell, setDwell] = useState('8');
   const [busy, setBusy] = useState(false);
@@ -490,24 +486,13 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
             gap: 12,
           }}
         >
-          <AdminField
-            label="Where the task sends people"
-            hint={fieldErrors.targetUrl ?? 'Type a Telegram name. Paste a full web address only for a website.'}
-          >
+          <AdminField label="Task URL" hint={fieldErrors.targetUrl}>
             <input
               value={targetUrl}
               onChange={(event) => setTargetUrl(event.target.value)}
-              placeholder="fundxtra"
+              placeholder="https://t.me/fundxtra"
               style={adminInputStyle}
             />
-            {/* The link that will actually be saved, shown as it is typed.
-                The field accepts a bare name, an @name, or a full address, so
-                the only way to make that obvious is to show the result. */}
-            {resolvedTargetUrl && (
-              <p style={resolvedLinkStyle}>
-                Opens <strong style={{ fontWeight: tokens.typography.weight.semibold }}>{resolvedTargetUrl}</strong>
-              </p>
-            )}
           </AdminField>
 
           {verification === 'TELEGRAM_MEMBERSHIP' && (
@@ -567,10 +552,3 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
     </AdminCard>
   );
 }
-
-const resolvedLinkStyle: React.CSSProperties = {
-  margin: '6px 0 0',
-  fontSize: tokens.typography.size['2xs'],
-  color: tokens.semantic.inkMuted,
-  wordBreak: 'break-all',
-};
