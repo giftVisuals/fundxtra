@@ -177,8 +177,20 @@ export const updateTaskSchema = z.object({
   category: taskCategorySchema.optional(),
   rewardKobo: koboSchema.max(LIMITS.MAX_TASK_REWARD_KOBO).optional(),
   budgetKobo: koboSchema.optional(),
+  /** Changing this is refused while submissions are waiting on the old rule. */
+  verification: verificationMethodSchema.optional(),
   perUserLimit: z.number().int().min(1).max(10).optional(),
-  targetUrl: z.string().trim().url().max(600).nullish(),
+  // Normalised the same way as on create, so editing accepts a bare Telegram
+  // name too rather than demanding a full address only here.
+  targetUrl: z
+    .string()
+    .trim()
+    .max(600)
+    .transform(normaliseTargetUrl)
+    .refine((value) => /^https?:\/\/\S+$/.test(value), {
+      message: 'Enter a link, or a Telegram username such as crediplex',
+    })
+    .nullish(),
   telegramChatId: trimmed(80).nullish(),
   telegramChatLabel: trimmed(80).nullish(),
   sponsorName: trimmed(80).nullish(),
@@ -187,6 +199,11 @@ export const updateTaskSchema = z.object({
   endsAt: z.string().datetime().nullish(),
   minimumDwellSeconds: z.number().int().min(0).max(3600).optional(),
   sortWeight: z.number().int().min(0).max(1000).optional(),
+});
+
+/** Adding to a campaign's budget, rather than setting it outright. */
+export const topUpBudgetSchema = z.object({
+  addKobo: koboSchema,
 });
 
 export const taskStatusChangeSchema = z.object({
@@ -431,6 +448,7 @@ export const withdrawalListSchema = paginationSchema.extend({
 export type TelegramAuthInput = z.infer<typeof telegramAuthSchema>;
 export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 export type UpdateTaskInput = z.infer<typeof updateTaskSchema>;
+export type TopUpBudgetInput = z.infer<typeof topUpBudgetSchema>;
 export type CompleteTaskInput = z.infer<typeof completeTaskSchema>;
 export type WithdrawalRequestInput = z.infer<typeof withdrawalRequestSchema>;
 export type BalanceAdjustmentInput = z.infer<typeof balanceAdjustmentSchema>;

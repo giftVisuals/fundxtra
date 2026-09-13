@@ -351,6 +351,28 @@ export async function updateTask(
       }
       if (key === 'sponsorLogoUrl') continue; // folded into `sponsor` above
 
+      if (key === 'verification' && value !== current.verification) {
+        /*
+          Changing how a task is verified is allowed, because an admin who set
+          one up wrongly should be able to fix it rather than start again. But
+          not while somebody's submission is waiting on the old rule: those
+          were made under a promise about how they would be judged, and
+          silently changing it after the fact is the thing that makes a rewards
+          platform feel arbitrary.
+        */
+        if (current.pendingCount > 0) {
+          throw new AppError(ERROR_CODES.VALIDATION_FAILED, {
+            fields: {
+              verification:
+                'Review the waiting submissions first — verification cannot change while people are waiting on the old rule.',
+            },
+          });
+        }
+        update.verification = value;
+        update.requiresProof = value === 'SCREENSHOT';
+        continue;
+      }
+
       update[key] = value;
     }
 
@@ -362,11 +384,84 @@ export async function updateTask(
       Math.floor(nextBudget / nextReward),
     );
 
+    /*
+      A campaign that ran out of money auto-pauses itself by going COMPLETED.
+      Raising its budget is a request to run it again, so it goes back to
+      ACTIVE rather than sitting there funded and invisible — which is what
+      happened before, and looked exactly like the top-up having failed.
+
+      Only ever revives a campaign the *budget* stopped. A campaign an admin
+      paused by hand, or one still in draft, stays where they put it.
+    */
+    if (
+      current.status === 'COMPLETED' &&
+      nextBudget - current.spentKobo >= nextReward &&
+      current.completionCount < (update.maxCompletions as number)
+    ) {
+      update.status = 'ACTIVE' as TaskStatus;
+    }
+
     tx.update(ref, update);
     return mapTask(taskId, { ...(snapshot.data() ?? {}), ...update });
   });
 
   invalidateTaskCache();
+  return updated;
+}
+
+/**
+ * Add money to a campaign's budget.
+ *
+ * Separate from `updateTask` setting an absolute figure, because those are
+ * different intentions and one of them is dangerous. "Make the budget ₦50,000"
+ * asks an admin to know what it is now and do arithmetic in their head against
+ * what has already been spent; "add ₦20,000" cannot be got wrong, and cannot
+ * accidentally cut a live campaign off at the knees by typing a number below
+ * what it has already paid out.
+ *
+ * A campaign that ran out of money is revived by this, because that is plainly
+ * what topping it up means.
+ */
+export async function topUpBudget(taskId: string, addKobo: Kobo): Promise<Task> {
+  const amount = assertPositiveKobo(addKobo, 'top-up');
+  const firestore = db();
+  const ref = firestore.collection(COLLECTIONS.tasks).doc(taskId);
+
+  const updated = await firestore.runTransaction(async (tx) => {
+    const snapshot = await tx.get(ref);
+    if (!snapshot.exists) throw notFound('that task');
+    const current = mapTask(snapshot.id, snapshot.data() ?? {});
+
+    const budgetKobo = current.budgetKobo + amount;
+    const maxCompletions = Math.max(
+      current.completionCount,
+      Math.floor(budgetKobo / current.rewardKobo),
+    );
+
+    const update: Record<string, unknown> = {
+      budgetKobo,
+      maxCompletions,
+      updatedAt: Timestamp.now(),
+    };
+
+    // Same rule as editing: only a campaign the budget stopped comes back.
+    if (
+      current.status === 'COMPLETED' &&
+      budgetKobo - current.spentKobo >= current.rewardKobo &&
+      current.completionCount < maxCompletions
+    ) {
+      update.status = 'ACTIVE' as TaskStatus;
+    }
+
+    tx.update(ref, update);
+    return mapTask(taskId, { ...(snapshot.data() ?? {}), ...update });
+  });
+
+  invalidateTaskCache();
+  logger.info(
+    { taskId, addKobo: amount, budgetKobo: updated.budgetKobo, status: updated.status },
+    'Campaign budget topped up',
+  );
   return updated;
 }
 

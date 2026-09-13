@@ -36,6 +36,7 @@ export function TasksView() {
   const [notice, setNotice] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -68,6 +69,13 @@ export function TasksView() {
     },
     [load, refreshDashboard],
   );
+
+  /*
+    Read back from the freshly loaded list rather than held in state, so the
+    form always edits what the table is showing. Holding a copy is how an edit
+    form ends up submitting a value the admin can no longer see.
+  */
+  const editingTask = editing === null ? null : (tasks ?? []).find((entry) => entry.id === editing);
 
   return (
     <div style={{ display: 'grid', gap: 18 }}>
@@ -250,13 +258,42 @@ export function TasksView() {
                         Pause
                       </AdminButton>
                     )}
+                    <AdminButton
+                      size="xs"
+                      disabled={busyId !== null}
+                      onClick={() => setEditing(editing === task.id ? null : task.id)}
+                    >
+                      {editing === task.id ? 'Close' : 'Edit'}
+                    </AdminButton>
                   </div>
+
+                  {/* A campaign that spent its budget pauses itself, which is
+                      right — but an admin looking at COMPLETED needs to be
+                      told that adding money is what starts it again. */}
+                  {task.status === 'COMPLETED' && (
+                    <p style={exhaustedNoteStyle}>
+                      Budget spent, so it stopped itself. Add to the budget to run it again.
+                    </p>
+                  )}
                 </Td>
               </tr>
             );
           })}
         </Table>
       </AdminCard>
+
+      {editingTask && (
+        <EditTaskForm
+          key={editingTask.id}
+          task={editingTask}
+          onDone={(message) => {
+            setEditing(null);
+            setNotice(message);
+            void load();
+            void refreshDashboard();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -548,6 +585,289 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
             Campaigns are created paused so you can check them before users see them.
           </span>
         </div>
+      </div>
+    </AdminCard>
+  );
+}
+
+const exhaustedNoteStyle: React.CSSProperties = {
+  marginTop: 6,
+  maxWidth: 220,
+  fontSize: tokens.typography.size['2xs'],
+  lineHeight: tokens.typography.leading.snug,
+  color: tokens.semantic.inkMuted,
+};
+
+/**
+ * Editing a live campaign.
+ *
+ * Everything a campaign has can be changed here, because the alternative —
+ * which is what existed before — is an admin who mistypes a reward or a link
+ * having to create a second campaign and pause the first, leaving two rows
+ * where there should be one and a share link that now points at the wrong
+ * thing.
+ *
+ * The budget is the exception, and it has its own control. Setting it to an
+ * absolute figure asks an admin to do arithmetic against what has already been
+ * spent, and getting that wrong cuts a running campaign off. Adding to it
+ * cannot be got wrong, so that is what the form offers.
+ *
+ * Fields are sent only when they are touched. An edit form that submits every
+ * field it rendered will happily overwrite something another admin changed
+ * while it sat open.
+ */
+function EditTaskForm({ task, onDone }: { task: Task; onDone: (message: string) => void }) {
+  const [patch, setPatch] = useState<Record<string, unknown>>({});
+  const [topUp, setTopUp] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const set = (field: string, value: unknown) => {
+    setPatch((current) => ({ ...current, [field]: value }));
+  };
+
+  const touched = Object.keys(patch).length > 0;
+  const topUpKobo = parseNairaInput(topUp);
+  const remainingKobo = Math.max(0, task.budgetKobo - task.spentKobo);
+
+  const save = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setFieldErrors({});
+    try {
+      if (touched) {
+        await api.patch(`/admin/tasks/${task.id}`, patch);
+      }
+      if (topUpKobo !== null && topUpKobo > 0) {
+        await api.post(`/admin/tasks/${task.id}/budget`, { addKobo: topUpKobo });
+      }
+      onDone(
+        topUpKobo && topUpKobo > 0
+          ? `Added ${formatNaira(topUpKobo)} to "${task.title}".`
+          : `"${task.title}" updated.`,
+      );
+    } catch (caught) {
+      if (caught instanceof ApiError) setFieldErrors(caught.fields ?? {});
+      setError(errorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  }, [task, patch, touched, topUpKobo, onDone]);
+
+  const textField = (field: keyof Task, label: string, current: string, hint?: string) => (
+    <AdminField label={label} hint={fieldErrors[field] ?? hint}>
+      <input
+        defaultValue={current}
+        onChange={(event) => set(field, event.target.value)}
+        style={adminInputStyle}
+      />
+    </AdminField>
+  );
+
+  return (
+    <AdminCard title={`Edit "${task.title}"`}>
+      <div style={{ display: 'grid', gap: 12 }}>
+        {/* Budget first: it is the reason most people open this form. */}
+        <AdminField
+          label="Add to the campaign budget"
+          hint={
+            fieldErrors.addKobo ??
+            `${formatNaira(task.budgetKobo)} total, ${formatNaira(task.spentKobo)} spent, ${formatNaira(remainingKobo)} left.${
+              task.status === 'COMPLETED' ? ' Adding to it will start the campaign again.' : ''
+            }`
+          }
+        >
+          <input
+            inputMode="decimal"
+            value={topUp}
+            onChange={(event) => setTopUp(event.target.value)}
+            placeholder="5000"
+            style={adminInputStyle}
+          />
+        </AdminField>
+
+        {topUpKobo !== null && topUpKobo > 0 && (
+          <p style={{ fontSize: tokens.typography.size.xs, color: tokens.semantic.brandInk }}>
+            New budget: <strong>{formatNaira(task.budgetKobo + topUpKobo)}</strong> — funds{' '}
+            {Math.floor((remainingKobo + topUpKobo) / task.rewardKobo).toLocaleString('en-NG')} more
+            completions.
+          </p>
+        )}
+
+        <hr style={{ border: 'none', borderTop: `1px solid ${tokens.semantic.divider}`, margin: '2px 0' }} />
+
+        {textField('title', 'Title', task.title)}
+
+        <AdminField label="Description" hint={fieldErrors.description}>
+          <textarea
+            defaultValue={task.description}
+            onChange={(event) => set('description', event.target.value)}
+            rows={2}
+            style={{ ...adminInputStyle, minHeight: 60, padding: 10, resize: 'vertical' }}
+          />
+        </AdminField>
+
+        <AdminField label="Instructions" hint={fieldErrors.instructions ?? 'One step per line.'}>
+          <textarea
+            defaultValue={task.instructions.join('\n')}
+            onChange={(event) =>
+              set(
+                'instructions',
+                event.target.value.split('\n').map((line) => line.trim()).filter(Boolean),
+              )
+            }
+            rows={4}
+            style={{ ...adminInputStyle, minHeight: 90, padding: 10, resize: 'vertical' }}
+          />
+        </AdminField>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))',
+            gap: 12,
+          }}
+        >
+          <AdminField label="Category">
+            <select
+              defaultValue={task.category}
+              onChange={(event) => set('category', event.target.value)}
+              style={adminInputStyle}
+            >
+              {Object.entries(TASK_CATEGORY_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </AdminField>
+
+          <AdminField
+            label="Verification"
+            hint={
+              fieldErrors.verification ??
+              (task.pendingCount > 0
+                ? `Locked while ${String(task.pendingCount)} submission(s) wait on the current rule.`
+                : undefined)
+            }
+          >
+            <select
+              defaultValue={task.verification}
+              disabled={task.pendingCount > 0}
+              onChange={(event) => set('verification', event.target.value)}
+              style={adminInputStyle}
+            >
+              {Object.entries(VERIFICATION_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </AdminField>
+
+          <AdminField
+            label="Reward in Naira"
+            hint={
+              fieldErrors.rewardKobo ??
+              (task.completionCount > 0
+                ? 'Can be raised, never lowered — people have already earned at the current rate.'
+                : undefined)
+            }
+          >
+            <input
+              inputMode="decimal"
+              defaultValue={String(task.rewardKobo / 100)}
+              onChange={(event) => {
+                const parsed = parseNairaInput(event.target.value);
+                if (parsed !== null) set('rewardKobo', parsed);
+              }}
+              style={adminInputStyle}
+            />
+          </AdminField>
+
+          <AdminField label="Times each person may complete it" hint={fieldErrors.perUserLimit}>
+            <input
+              inputMode="numeric"
+              defaultValue={String(task.perUserLimit)}
+              onChange={(event) => {
+                const parsed = Number.parseInt(event.target.value, 10);
+                if (Number.isFinite(parsed)) set('perUserLimit', parsed);
+              }}
+              style={adminInputStyle}
+            />
+          </AdminField>
+        </div>
+
+        <AdminField
+          label="Where the task sends people"
+          hint={fieldErrors.targetUrl ?? 'A Telegram name, or a full web address.'}
+        >
+          <input
+            defaultValue={task.targetUrl ?? ''}
+            onChange={(event) => set('targetUrl', event.target.value || null)}
+            style={adminInputStyle}
+          />
+        </AdminField>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))',
+            gap: 12,
+          }}
+        >
+          <AdminField label="Telegram chat" hint={fieldErrors.telegramChatId}>
+            <input
+              defaultValue={task.telegramChatLabel ?? ''}
+              onChange={(event) => set('telegramChatId', event.target.value || null)}
+              style={adminInputStyle}
+            />
+          </AdminField>
+
+          <AdminField label="Sponsor" hint={fieldErrors.sponsorName}>
+            <input
+              defaultValue={task.sponsor?.name ?? ''}
+              onChange={(event) => set('sponsorName', event.target.value || null)}
+              style={adminInputStyle}
+            />
+          </AdminField>
+
+          <AdminField label="Minimum seconds on the task" hint={fieldErrors.minimumDwellSeconds}>
+            <input
+              inputMode="numeric"
+              defaultValue={String(task.minimumDwellSeconds)}
+              onChange={(event) => {
+                const parsed = Number.parseInt(event.target.value, 10);
+                if (Number.isFinite(parsed)) set('minimumDwellSeconds', parsed);
+              }}
+              style={adminInputStyle}
+            />
+          </AdminField>
+
+          <AdminField label="Order in the list" hint={fieldErrors.sortWeight ?? 'Higher shows first.'}>
+            <input
+              inputMode="numeric"
+              defaultValue={String(task.sortWeight)}
+              onChange={(event) => {
+                const parsed = Number.parseInt(event.target.value, 10);
+                if (Number.isFinite(parsed)) set('sortWeight', parsed);
+              }}
+              style={adminInputStyle}
+            />
+          </AdminField>
+        </div>
+
+        {error && (
+          <p style={{ fontSize: tokens.typography.size.xs, color: tokens.colors.danger.strong }}>
+            {error}
+          </p>
+        )}
+
+        <AdminButton
+          tone="primary"
+          loading={busy}
+          disabled={busy || (!touched && !(topUpKobo !== null && topUpKobo > 0))}
+          onClick={() => void save()}
+        >
+          {!touched && !(topUpKobo !== null && topUpKobo > 0) ? 'Nothing changed yet' : 'Save changes'}
+        </AdminButton>
       </div>
     </AdminCard>
   );

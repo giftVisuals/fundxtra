@@ -37,7 +37,7 @@ vi.mock('../src/lib/telegram-bot', () => ({
 }));
 
 const { completeTask, reviewSubmission } = await import('../src/services/completions');
-const { taskAvailability, budgetView, mapTask } = await import('../src/services/tasks');
+const { taskAvailability, budgetView, mapTask, topUpBudget, updateTask } = await import('../src/services/tasks');
 const { mapUser } = await import('../src/services/users');
 
 function seedUser(id: string, overrides: Record<string, unknown> = {}) {
@@ -484,5 +484,108 @@ describe('task link ids', () => {
     // Completions are keyed `userId__taskId`, so the id must not contain `__`.
     expect(task.id).not.toContain('__');
     expect(`555001__${task.id}`.split('__')).toHaveLength(2);
+  });
+});
+
+/**
+ * Refilling a campaign that ran out.
+ *
+ * A campaign auto-pauses itself when it can no longer fund a reward — it goes
+ * COMPLETED and disappears from the earn list, which is right. What was wrong
+ * is what happened next: an admin adding money to it left it funded and still
+ * invisible, which looks exactly like the top-up having failed.
+ */
+describe('topping up a campaign budget', () => {
+  it('adds to the budget rather than replacing it', async () => {
+    seedTask('t1', { budgetKobo: 45_000, spentKobo: 30_000 });
+
+    const updated = await topUpBudget('t1', 60_000);
+
+    expect(updated.budgetKobo).toBe(105_000);
+    // Spent is untouched: this adds money, it does not reset the campaign.
+    expect(updated.spentKobo).toBe(30_000);
+  });
+
+  it('raises how many completions the budget can fund', async () => {
+    seedTask('t1', { rewardKobo: 15_000, budgetKobo: 45_000, maxCompletions: 3 });
+
+    const updated = await topUpBudget('t1', 45_000);
+    expect(updated.maxCompletions).toBe(6);
+  });
+
+  it('brings an exhausted campaign back to life', async () => {
+    seedTask('spent', {
+      status: 'COMPLETED', rewardKobo: 15_000, budgetKobo: 45_000,
+      spentKobo: 45_000, completionCount: 3, maxCompletions: 3,
+    });
+
+    const updated = await topUpBudget('spent', 30_000);
+
+    expect(updated.status).toBe('ACTIVE');
+    expect(taskAvailability(updated).available).toBe(true);
+  });
+
+  it('leaves a campaign an admin paused by hand alone', async () => {
+    seedTask('paused', { status: 'PAUSED', spentKobo: 0 });
+
+    const updated = await topUpBudget('paused', 30_000);
+
+    // Only the budget stops a campaign automatically. A human decision stands
+    // until a human reverses it.
+    expect(updated.status).toBe('PAUSED');
+  });
+
+  it('leaves a draft as a draft', async () => {
+    seedTask('draft', { status: 'DRAFT' });
+    expect((await topUpBudget('draft', 30_000)).status).toBe('DRAFT');
+  });
+
+  it('refuses a top-up of nothing', async () => {
+    seedTask('t1');
+    await expect(topUpBudget('t1', 0)).rejects.toThrow();
+    await expect(topUpBudget('t1', -5_000)).rejects.toThrow();
+  });
+});
+
+describe('editing a campaign', () => {
+  it('revives an exhausted campaign when the budget is raised', async () => {
+    seedTask('spent', {
+      status: 'COMPLETED', rewardKobo: 15_000, budgetKobo: 45_000,
+      spentKobo: 45_000, completionCount: 3, maxCompletions: 3,
+    });
+
+    const updated = await updateTask('spent', { budgetKobo: 90_000 });
+    expect(updated.status).toBe('ACTIVE');
+  });
+
+  it('still refuses a budget below what has been spent', async () => {
+    seedTask('t1', { budgetKobo: 45_000, spentKobo: 30_000 });
+
+    // The reason a person can act on lives in `fields`, not in the generic
+    // message the envelope carries.
+    await expect(updateTask('t1', { budgetKobo: 20_000 })).rejects.toMatchObject({
+      fields: { budgetKobo: expect.stringMatching(/already been spent/i) },
+    });
+  });
+
+  it('lets an admin correct the verification method', async () => {
+    seedTask('t1', { verification: 'TELEGRAM_MEMBERSHIP', requiresProof: false });
+
+    const updated = await updateTask('t1', { verification: 'SCREENSHOT' });
+
+    expect(updated.verification).toBe('SCREENSHOT');
+    // The flag the earn screen reads must follow, or the task asks for a
+    // screenshot the app never offers a way to attach.
+    expect(updated.requiresProof).toBe(true);
+  });
+
+  it('refuses to change verification while submissions are waiting', async () => {
+    seedTask('t1', { verification: 'SCREENSHOT', requiresProof: true, pendingCount: 2 });
+
+    // Those submissions were made under a promise about how they would be
+    // judged. Changing it after the fact is how a platform feels arbitrary.
+    await expect(updateTask('t1', { verification: 'HONOUR' })).rejects.toMatchObject({
+      fields: { verification: expect.stringMatching(/waiting/i) },
+    });
   });
 });

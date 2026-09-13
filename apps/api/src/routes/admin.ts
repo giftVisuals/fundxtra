@@ -15,6 +15,7 @@ import {
   taskStatusChangeSchema,
   updateAdminSchema,
   updateTaskSchema,
+  topUpBudgetSchema,
   userSearchSchema,
   userStatusChangeSchema,
   withdrawalDecisionSchema,
@@ -53,7 +54,14 @@ import { reconcilePendingRedemptions } from '../services/rewards';
 import { listSecurityEvents } from '../services/security';
 import { getSettings, updateSettings } from '../services/settings';
 import { recomputeStats } from '../services/stats';
-import { createTask, listAllTasks, requireTask, setTaskStatus, updateTask } from '../services/tasks';
+import {
+  createTask,
+  listAllTasks,
+  requireTask,
+  setTaskStatus,
+  topUpBudget,
+  updateTask,
+} from '../services/tasks';
 import { fetchProof, signedProofUrl } from '../services/uploads';
 import { buildOwnerBrief, formatOwnerBrief } from '../services/briefing';
 import { clearFlag, requireUser } from '../services/users';
@@ -336,6 +344,42 @@ adminRouter.patch(
         summary: `Updated "${task.title}"`,
         before: { rewardKobo: before.rewardKobo, budgetKobo: before.budgetKobo },
         after: { rewardKobo: task.rewardKobo, budgetKobo: task.budgetKobo },
+        ip: req.clientIp,
+      });
+      ok(res, { task });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * Add to a campaign's budget.
+ *
+ * A separate endpoint from the general edit because it is a different
+ * intention: "add ₦20,000" cannot be got wrong, while "make the budget
+ * ₦50,000" asks an admin to do arithmetic against what has already been spent
+ * and gets a campaign cut off when they get it wrong.
+ */
+adminRouter.post(
+  '/tasks/:taskId/budget',
+  requirePermission('tasks:manage'),
+  validateBody(topUpBudgetSchema),
+  async (req, res, next) => {
+    try {
+      const taskId = pathParam(req, 'taskId');
+      const input = parsed(res, topUpBudgetSchema);
+      const before = await requireTask(taskId);
+      const task = await topUpBudget(taskId, input.addKobo);
+
+      await recordAudit({
+        action: 'TASK_UPDATED',
+        actor: req.admin!,
+        targetType: 'task',
+        targetId: taskId,
+        summary: `Added ${formatNaira(input.addKobo)} to "${task.title}"`,
+        before: { budgetKobo: before.budgetKobo, status: before.status },
+        after: { budgetKobo: task.budgetKobo, status: task.status },
         ip: req.clientIp,
       });
       ok(res, { task });
