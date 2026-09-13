@@ -14,7 +14,7 @@
              │  (public stats only)                   │ Admin SDK
              ▼                                        ▼
       ┌──────────────────────────────────────────────────────┐
-      │  Firestore + Cloud Storage      Telegram Bot API      │
+      │  Firestore   imgbb (proofs)    Telegram Bot API      │
       └──────────────────────────────────────────────────────┘
 
               packages/shared

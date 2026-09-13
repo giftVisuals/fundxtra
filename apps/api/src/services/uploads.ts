@@ -1,5 +1,5 @@
 import { ACCEPTED_PROOF_MIME_TYPES, ERROR_CODES, LIMITS } from '@fundxtra/shared';
-import { bucket } from '../lib/firebase';
+import { env } from '../config/env';
 import { AppError } from '../lib/errors';
 import { hashedId } from '../lib/ids';
 import { logger } from '../lib/logger';
@@ -7,15 +7,46 @@ import { logger } from '../lib/logger';
 /**
  * Proof-of-completion uploads.
  *
- * Screenshots go through the API to Cloud Storage rather than being uploaded
- * from the browser. That costs a little bandwidth and buys three things worth
- * more: the file type is checked against its actual magic bytes rather than a
- * client-supplied Content-Type, the storage bucket needs no public write rule
- * at all, and the stored path is derived server-side so a user cannot choose
- * where their file lands or overwrite someone else's proof.
+ * Screenshots go to imgbb rather than Cloud Storage. Cloud Storage has to be
+ * switched on in the Firebase console before it will accept a single byte, and
+ * until it is, every screenshot task fails — a setup step standing between the
+ * platform and its most common kind of campaign. imgbb needs one API key.
+ *
+ * The cost of that is real and is not hidden: **an imgbb link is public.**
+ * Anyone who has the URL can open the image without signing in. The links are
+ * long random strings and are never shown to anyone but the admin reviewing
+ * the submission, but they are not access-controlled, and a screenshot can
+ * carry more of someone's screen than they meant to share. Two things follow
+ * from that, both enforced below: uploads expire, so proofs do not sit on a
+ * third-party host indefinitely; and the API key stays on the server, so the
+ * upload path cannot be driven by anything but a signed-in user completing a
+ * task they were offered.
+ *
+ * Everything else about the flow is unchanged, and deliberately so:
+ *
+ *  - The file goes through the API, never from the browser to imgbb. That
+ *    keeps the key out of the client entirely, and means the bytes are checked
+ *    before they leave us.
+ *  - The type is checked against the file's actual magic bytes, not against a
+ *    Content-Type header the client chose.
+ *  - The stored value is whatever the host gave back, so a user cannot
+ *    influence where their file lands or overwrite someone else's proof.
  */
 
 const PROOF_PREFIX = 'task-proofs';
+const IMGBB_UPLOAD_URL = 'https://api.imgbb.com/1/upload';
+const UPLOAD_TIMEOUT_MS = 25_000;
+
+/** Only the parts of imgbb's reply this code depends on. */
+interface ImgbbResponse {
+  success?: boolean;
+  data?: {
+    url?: string;
+    display_url?: string;
+    delete_url?: string;
+  };
+  error?: { message?: string };
+}
 
 /**
  * Validate a file by inspecting its leading bytes.
@@ -49,7 +80,14 @@ export function detectImageType(buffer: Buffer): 'image/png' | 'image/jpeg' | 'i
 }
 
 export interface StoredProof {
+  /** The image URL, stored against the submission. */
   path: string;
+  /**
+   * imgbb's own delete page for this upload. Kept for the record: it is a web
+   * page rather than an API call, so nothing here can use it automatically —
+   * expiry is what actually removes the file.
+   */
+  deleteUrl: string | null;
   contentType: string;
   bytes: number;
 }
@@ -81,79 +119,176 @@ export async function storeProof(input: {
     });
   }
 
-  const extension = actualType === 'image/png' ? 'png' : actualType === 'image/webp' ? 'webp' : 'jpg';
-  // Path is derived from the user, the task and the clock, never from client input.
-  const path = `${PROOF_PREFIX}/${input.userId}/${hashedId(input.taskId, String(Date.now()))}.${extension}`;
-
-  try {
-    await bucket()
-      .file(path)
-      .save(input.buffer, {
-        contentType: actualType,
-        resumable: false,
-        metadata: {
-          cacheControl: 'private, max-age=0, no-transform',
-          metadata: { userId: input.userId, taskId: input.taskId },
-        },
-      });
-  } catch (error) {
+  if (!env.IMGBB_API_KEY) {
     /*
-      A bucket that does not exist is a setup step, not a bug — Cloud Storage
-      has to be switched on in the Firebase console before any screenshot can
-      be stored. Left as a generic 500 it reads to the user as "the app is
-      broken" and tells the operator nothing, so it is named here the same way
-      a missing database index is.
+      Named rather than left to fail as a 500. Without the key there is nowhere
+      to put a screenshot, and that is a missing setting, not a bug — the user
+      is told it is not switched on and the log says exactly which one.
     */
-    const message = error instanceof Error ? error.message : String(error);
-    if (/bucket does not exist|not found|notfound|404/i.test(message)) {
-      logger.error(
-        { err: error, bucket: bucket().name },
-        'Screenshot upload failed: the storage bucket does not exist. Enable Cloud Storage in the Firebase console.',
-      );
-      throw new AppError(ERROR_CODES.VERIFICATION_UNAVAILABLE, {
-        message: 'Screenshot uploads are not switched on yet. Please tell Fundxtra Support.',
-        detail: 'Cloud Storage is not enabled for this project, or the bucket name is wrong.',
-      });
-    }
-    logger.error({ err: error, path }, 'Screenshot upload failed');
+    logger.error('Screenshot upload attempted with no IMGBB_API_KEY set');
     throw new AppError(ERROR_CODES.VERIFICATION_UNAVAILABLE, {
-      message: 'We could not save your screenshot just now. Please try again.',
-      detail: message,
+      message: 'Screenshot uploads are not switched on yet. Please tell Fundxtra Support.',
+      detail: 'IMGBB_API_KEY is not configured.',
     });
   }
 
-  logger.info({ path, bytes: input.buffer.length, userId: input.userId }, 'Proof stored');
-  return { path, contentType: actualType, bytes: input.buffer.length };
+  const extension = actualType === 'image/png' ? 'png' : actualType === 'image/webp' ? 'webp' : 'jpg';
+  // Named from the user and the task so a proof can be traced back from the
+  // host's own dashboard. Never from anything the client sent.
+  const name = `${PROOF_PREFIX}-${input.userId}-${hashedId(input.taskId, String(Date.now()))}`;
+
+  const uploaded = await uploadToImgbb({
+    buffer: input.buffer,
+    filename: `${name}.${extension}`,
+    contentType: actualType,
+  });
+
+  logger.info(
+    { userId: input.userId, taskId: input.taskId, bytes: input.buffer.length },
+    'Proof stored',
+  );
+
+  return {
+    path: uploaded.url,
+    deleteUrl: uploaded.deleteUrl,
+    contentType: actualType,
+    bytes: input.buffer.length,
+  };
 }
 
 /**
- * A short-lived signed URL so an admin can view a proof.
+ * POST the image to imgbb.
  *
- * The bucket itself stays private; nothing is ever made publicly readable, and
- * the link expires so it cannot be forwarded indefinitely.
+ * Sent as multipart with the raw bytes rather than base64: base64 inflates the
+ * body by a third for no benefit, and imgbb accepts a binary file directly.
+ * The key travels in the form body rather than the query string so it cannot
+ * end up in a proxy's access log.
+ *
+ * Timed out, because a third-party host that hangs must not hold a request
+ * open — the user is standing there with their thumb on a button.
  */
-export async function signedProofUrl(path: string, minutes = 15): Promise<string | null> {
-  if (!path.startsWith(`${PROOF_PREFIX}/`)) {
-    // Refuse to sign anything outside the proofs prefix, so a crafted path
-    // cannot be turned into a read of arbitrary bucket contents.
-    logger.warn({ path }, 'Refused to sign a URL outside the proofs prefix');
-    return null;
-  }
+async function uploadToImgbb(input: {
+  buffer: Buffer;
+  filename: string;
+  contentType: string;
+}): Promise<{ url: string; deleteUrl: string | null }> {
+  const form = new FormData();
+  form.append('key', env.IMGBB_API_KEY ?? '');
+  form.append('image', new Blob([new Uint8Array(input.buffer)], { type: input.contentType }), input.filename);
+  form.append('name', input.filename);
+  form.append('expiration', String(env.IMGBB_EXPIRATION_SECONDS));
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+
+  let payload: ImgbbResponse;
   try {
-    const [url] = await bucket()
-      .file(path)
-      .getSignedUrl({ action: 'read', expires: Date.now() + minutes * 60_000, version: 'v4' });
-    return url;
+    const response = await fetch(IMGBB_UPLOAD_URL, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
+    payload = (await response.json()) as ImgbbResponse;
+
+    if (!response.ok || payload.success !== true) {
+      // imgbb's own wording is for us, not for the user: it names our key.
+      logger.error(
+        { status: response.status, imgbb: payload.error?.message ?? null },
+        'imgbb refused the upload',
+      );
+      throw new AppError(ERROR_CODES.VERIFICATION_UNAVAILABLE, {
+        message: 'We could not save your screenshot just now. Please try again.',
+        detail: payload.error?.message ?? `imgbb returned ${String(response.status)}`,
+      });
+    }
   } catch (error) {
-    logger.error({ err: error, path }, 'Could not sign a proof URL');
-    return null;
+    if (error instanceof AppError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new AppError(ERROR_CODES.VERIFICATION_UNAVAILABLE, {
+        message: 'That upload took too long. Please try again.',
+        detail: 'imgbb timed out',
+      });
+    }
+    logger.error({ err: error }, 'Could not reach imgbb');
+    throw new AppError(ERROR_CODES.VERIFICATION_UNAVAILABLE, {
+      message: 'We could not save your screenshot just now. Please try again.',
+      detail: error instanceof Error ? error.message : 'network failure',
+    });
+  } finally {
+    clearTimeout(timeout);
   }
+
+  /*
+    `display_url` is the image itself; `url` is the same file under a different
+    host name. Either works for showing a proof, so the first that is present
+    is taken rather than depending on one field being there.
+  */
+  const url = payload.data?.display_url ?? payload.data?.url;
+  if (!url) {
+    logger.error({ imgbb: payload }, 'imgbb accepted the upload but returned no URL');
+    throw new AppError(ERROR_CODES.VERIFICATION_UNAVAILABLE, {
+      message: 'We could not save your screenshot just now. Please try again.',
+      detail: 'imgbb returned no image URL',
+    });
+  }
+
+  return { url, deleteUrl: payload.data?.delete_url ?? null };
 }
 
+/**
+ * The URL an admin opens to look at a proof.
+ *
+ * With imgbb the stored value is already the image, so there is nothing to
+ * sign — the name is kept because the callers are about "give me a viewable
+ * link for this proof", which is still exactly what this does.
+ *
+ * Only https URLs on imgbb's own hosts are handed back. The stored value comes
+ * from our own upload code and never from a client, but this is the function
+ * that turns a stored string into something an admin's browser will open, so
+ * it refuses anything that is not what it expects rather than trusting that
+ * the value upstream is still what it was.
+ */
+const IMGBB_HOSTS = new Set(['i.ibb.co', 'ibb.co', 'image.ibb.co']);
+
+export function proofUrl(path: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(path);
+  } catch {
+    logger.warn({ path }, 'Stored proof is not a URL');
+    return null;
+  }
+
+  if (parsed.protocol !== 'https:' || !IMGBB_HOSTS.has(parsed.hostname)) {
+    logger.warn({ host: parsed.hostname }, 'Refused to hand back a proof URL from an unexpected host');
+    return null;
+  }
+  return parsed.toString();
+}
+
+/**
+ * Kept as the shape the admin routes already await.
+ *
+ * Nothing is signed any more, but the callers are async and turning them
+ * synchronous buys nothing.
+ */
+export async function signedProofUrl(path: string): Promise<string | null> {
+  return Promise.resolve(proofUrl(path));
+}
+
+/**
+ * Removing a proof is not something this code can do.
+ *
+ * imgbb's delete link is a web page a person visits, not an endpoint, so the
+ * only thing that actually removes an upload is the expiry set when it was
+ * made. Left as a no-op that says so, rather than deleted outright: the
+ * callers describe an intention that is still correct, and a function that
+ * quietly does nothing is worse than one that explains why.
+ */
 export async function deleteProof(path: string): Promise<void> {
-  if (!path.startsWith(`${PROOF_PREFIX}/`)) return;
-  await bucket()
-    .file(path)
-    .delete({ ignoreNotFound: true })
-    .catch((error: unknown) => logger.warn({ err: error, path }, 'Could not delete a proof'));
+  logger.info(
+    { path },
+    'Proof deletion is handled by the upload expiry; imgbb has no delete API',
+  );
+  return Promise.resolve();
 }

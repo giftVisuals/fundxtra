@@ -23,7 +23,7 @@ import { logger } from '../lib/logger';
 
 export const tasksRouter = Router();
 
-/** Screenshots are held in memory briefly, then streamed to Cloud Storage. */
+/** Screenshots are held in memory briefly, then forwarded to the image host. */
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: LIMITS.MAX_PROOF_BYTES, files: 1 },

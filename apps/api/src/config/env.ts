@@ -56,9 +56,25 @@ const envSchema = z.object({
   FIREBASE_CLIENT_EMAIL: z.string().email().optional(),
   /** PEM key. Newlines may be escaped as \n when set through a dashboard. */
   FIREBASE_PRIVATE_KEY: z.string().min(40).optional(),
-  FIREBASE_STORAGE_BUCKET: z.string().min(1).default('fundxtra.firebasestorage.app'),
   /** Point at the emulator for local development, e.g. 127.0.0.1:8080. */
   FIRESTORE_EMULATOR_HOST: z.string().optional(),
+
+  /**
+   * imgbb, which hosts the screenshots users upload as proof.
+   *
+   * Chosen over Cloud Storage because it needs nothing switched on in the
+   * Firebase console — one key and uploads work. The trade is real and worth
+   * stating: an imgbb link is public to anyone who has it. See
+   * services/uploads.ts.
+   */
+  IMGBB_API_KEY: z.string().min(8).optional(),
+  /**
+   * How long imgbb keeps a screenshot, in seconds. Their accepted range is
+   * 60 to 15,552,000 (180 days), and 180 days is the default: long enough for
+   * a payout dispute months later, and it means proofs do not sit on a
+   * third-party host forever.
+   */
+  IMGBB_EXPIRATION_SECONDS: z.coerce.number().int().min(60).max(15_552_000).default(15_552_000),
 
   /** Which reward provider to use: none | mock | nasfampay. */
   REWARD_PROVIDER: z.enum(['none', 'mock', 'nasfampay']).default('none'),
@@ -166,6 +182,13 @@ export function readiness(): { ready: boolean; missing: string[]; warnings: stri
   }
   if (isProduction && env.CORS_ORIGINS.length === 0) {
     warnings.push('CORS_ORIGINS is empty in production; browser calls will be rejected.');
+  }
+
+  if (!env.IMGBB_API_KEY) {
+    // A warning rather than a missing requirement: everything except
+    // screenshot tasks works without it, so this must not hold the service
+    // down — but the operator should see it before a user does.
+    warnings.push('IMGBB_API_KEY is not set; screenshot proof uploads will be refused.');
   }
 
   return { ready: missing.length === 0, missing, warnings };

@@ -1,6 +1,5 @@
 import { cert, getApps, initializeApp, type App } from 'firebase-admin/app';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
-import { getStorage } from 'firebase-admin/storage';
 import { env, hasFirestore, serviceAccount } from '../config/env';
 import { logger } from './logger';
 
@@ -25,7 +24,6 @@ function initialise(): App {
     logger.warn({ host: env.FIRESTORE_EMULATOR_HOST }, 'Using Firestore emulator');
     return initializeApp({
       projectId: env.FIREBASE_PROJECT_ID,
-      storageBucket: env.FIREBASE_STORAGE_BUCKET,
     });
   }
 
@@ -50,7 +48,6 @@ function initialise(): App {
       privateKey: account.privateKey,
     }),
     projectId: account.projectId,
-    storageBucket: env.FIREBASE_STORAGE_BUCKET,
   });
 }
 
@@ -65,10 +62,6 @@ export function db(): Firestore {
     firestore.settings({ ignoreUndefinedProperties: true });
   }
   return firestore;
-}
-
-export function bucket() {
-  return getStorage(getApp()).bucket(env.FIREBASE_STORAGE_BUCKET);
 }
 
 /** True when Firestore is configured. Routes degrade gracefully when false. */

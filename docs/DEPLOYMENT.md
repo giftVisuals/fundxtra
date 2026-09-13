@@ -56,11 +56,12 @@ never reported as merely "missing".
 **These credentials bypass every security rule.** They belong only in the API's
 environment — never in the frontend, never in the repository.
 
-### Enable Cloud Storage
+### Cloud Storage is not needed
 
-Firebase console → **Storage** → get started, in the same region as Firestore.
-The bucket is `fundxtra.firebasestorage.app`. Screenshot proofs go here through
-the API; the bucket is never publicly readable.
+Screenshot proofs go to imgbb, not to Firebase. That is one fewer thing to
+switch on, and it is why `IMGBB_API_KEY` appears in the Railway variables
+below. See **Screenshot proofs** at the end of this document for what that
+choice costs.
 
 ---
 
@@ -119,7 +120,7 @@ TELEGRAM_BOT_TOKEN=        # from @BotFather
 TELEGRAM_BOT_USERNAME=fundxtrabot
 FIREBASE_SERVICE_ACCOUNT=  # the whole service-account JSON, one paste
 FIREBASE_PROJECT_ID=fundxtra
-FIREBASE_STORAGE_BUCKET=fundxtra.firebasestorage.app
+IMGBB_API_KEY=           # from https://api.imgbb.com/ → Get API key
 REWARD_PROVIDER=none
 PRIMARY_ADMIN_TELEGRAM_ID=6438544386
 PUBLIC_WEB_URL=https://fundxtra.vercel.app
@@ -340,3 +341,32 @@ by default. To open for business:
   you want them gone immediately.
 - Firebase service account — delete the key in the Firebase console, generate a
   new one, update Railway.
+
+---
+
+## Screenshot proofs
+
+Tasks verified by a person ask the user for a screenshot. Those images are
+uploaded through the API to **imgbb**, which needs one key and no console
+setup — set `IMGBB_API_KEY` on Railway and screenshot tasks work.
+
+What that choice costs, stated plainly:
+
+- **An imgbb link is public.** Anyone who has the URL can open the image
+  without signing in. The URLs are long random strings, and the only place one
+  is ever shown is the admin screen reviewing that submission — but they are
+  not access-controlled, and a screenshot can show more of someone's phone
+  than they intended.
+- **Uploads expire.** `IMGBB_EXPIRATION_SECONDS` defaults to 180 days, imgbb's
+  maximum, so a proof outlives any realistic payout dispute and then goes away
+  on its own. Expiry is the only thing that removes an upload: imgbb's delete
+  link is a web page a person visits, not an endpoint, so nothing in the API
+  can delete one for you.
+- **The key never leaves the server.** The browser uploads to our API, which
+  checks the file's actual magic bytes and then forwards it. The key travels in
+  the request body rather than the query string, so it cannot be captured in a
+  proxy or access log.
+
+If that trade is ever not acceptable — carrying identity documents, say —
+private object storage with signed URLs is the thing to move to, and
+`services/uploads.ts` is the only file that would change.
