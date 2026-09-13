@@ -26,7 +26,7 @@ fundxtra/
 ├─ packages/
 │  └─ shared/         types, zod schemas, design tokens, money helpers
 ├─ firebase/          Firestore rules, indexes, Storage rules
-└─ docs/              architecture, data model, security, deployment, providers
+└─ docs/              launch, operations, architecture, data model, security, deployment
 ```
 
 One shared package is the reason the three surfaces agree with each other: the
@@ -123,6 +123,8 @@ misconfigured deployment cannot take money for undeliverable rewards.
 
 | Document | Contents |
 | --- | --- |
+| [docs/LAUNCH.md](docs/LAUNCH.md) | **Owner:** what to do before going live or stepping back |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | **Daily work:** hand this to whoever reviews and pays |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the pieces fit, and why |
 | [docs/DATA_MODEL.md](docs/DATA_MODEL.md) | Every collection, field and invariant |
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model and what defends against what |

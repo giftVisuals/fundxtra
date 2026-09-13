@@ -316,6 +316,18 @@ https://api.telegram.org/bot<TOKEN>/getWebhookInfo
 
 ---
 
+## Backups
+
+**Firebase console → Firestore → Backups → Create schedule.** Daily, retained a
+week or more, and switch on point-in-time recovery in the same place.
+
+Firestore holds the ledger: every naira earned, owed and paid. It exists in one
+place until this is turned on, and there is no version of the platform that
+survives losing it — you would not know who to pay or how much. It is five
+minutes and it is not optional before real users arrive.
+
+---
+
 ## Going live safely
 
 Fundxtra ships **fail-closed**: withdrawals and every reward method start
