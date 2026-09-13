@@ -56,11 +56,21 @@ beforeEach(() => {
   sent.length = 0;
 });
 
+/**
+ * Seeded with `submittedAt`, which is the field the service actually writes.
+ *
+ * This fixture used to seed `createdAt`, a field no submission has ever had.
+ * The alert read that field, got undefined, scored it as zero and concluded
+ * nothing was old — so the stale-submission alert could never fire at all in
+ * production, and these tests passed anyway because the fixture invented the
+ * field the code was looking for. A fixture that does not match what the
+ * service writes does not test the service.
+ */
 function seedSubmission(id: string, agoHours: number) {
   store.seed('taskSubmissions', id, {
     userId: 'u1', taskId: 't1', status: 'PENDING_REVIEW',
     proofPath: 'https://i.ibb.co/a/b.png', answer: null, rejectionReason: null,
-    createdAt: Timestamp.fromMillis(Date.now() - agoHours * HOURS),
+    submittedAt: Timestamp.fromMillis(Date.now() - agoHours * HOURS),
   });
 }
 
@@ -185,5 +195,47 @@ describe('the stale work alert', () => {
     expect(await sendStaleWorkAlertIfNeeded()).toBe(true);
     expect(await sendStaleWorkAlertIfNeeded()).toBe(false);
     expect(sent).toHaveLength(1);
+  });
+});
+
+/**
+ * What the alert costs when there is nothing to do.
+ *
+ * The scheduler runs this every ten minutes. It used to scan both pending
+ * queues *before* checking whether it had already alerted today, so a backlog
+ * of five thousand submissions was scanned a hundred and forty-four times a
+ * day to send at most one message. That is the exact pattern this codebase
+ * spent a day removing everywhere else.
+ */
+describe('what the stale check costs', () => {
+  it('reads almost nothing on a tick that has nothing to do', async () => {
+    for (let index = 0; index < 40; index += 1) seedSubmission(`s${String(index)}`, 40);
+
+    // First tick alerts, and is allowed to look at the queues.
+    expect(await sendStaleWorkAlertIfNeeded()).toBe(true);
+
+    store.resetMetrics();
+    for (let index = 0; index < 12; index += 1) {
+      expect(await sendStaleWorkAlertIfNeeded()).toBe(false);
+    }
+
+    /*
+      Twelve ticks, one read each: "have I already sent today?". The queues are
+      never touched. Before, this was twelve scans of forty submissions.
+    */
+    expect(store.metrics.reads).toBeLessThanOrEqual(12);
+  });
+
+  it('finds the oldest without reading the whole queue', async () => {
+    seedSubmission('ancient', 100);
+    for (let index = 0; index < 30; index += 1) seedSubmission(`s${String(index)}`, 40);
+
+    store.resetMetrics();
+    expect(await sendStaleWorkAlertIfNeeded()).toBe(true);
+
+    // It reports the genuinely oldest, not the oldest of a capped page.
+    expect(sent[0]?.text).toContain('100 hours');
+    // A handful of reads, not one per pending row.
+    expect(store.metrics.reads).toBeLessThan(12);
   });
 });

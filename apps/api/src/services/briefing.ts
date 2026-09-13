@@ -3,7 +3,7 @@ import { formatNaira, type Kobo } from '@fundxtra/shared';
 import { env } from '../config/env';
 import { COLLECTIONS, db } from '../lib/firebase';
 import { logger } from '../lib/logger';
-import { millisOf, runFilteredQuery } from '../lib/query-fallback';
+import { millisOf, runFilteredQuery, runOrderedQuery } from '../lib/query-fallback';
 import { platformDayKey, startOfPlatformDay } from '../lib/time';
 import { sendBotMessage } from '../lib/telegram-bot';
 import { adminDashboard } from './admin-users';
@@ -191,31 +191,13 @@ async function sumRecentPayouts(): Promise<{
   return { todayKobo, yesterdayKobo, yesterdayCount };
 }
 
-/** How long the oldest unreviewed submission has been waiting. */
-async function oldestPendingSubmissionHours(): Promise<number | null> {
-  const snapshot = await db()
-    .collection(COLLECTIONS.taskSubmissions)
-    .where('status', '==', 'PENDING_REVIEW')
-    .limit(500)
-    .get();
-
-  let oldest: number | null = null;
-  for (const doc of snapshot.docs) {
-    const at = millisOf(doc.get('createdAt'));
-    if (at > 0 && (oldest === null || at < oldest)) oldest = at;
-  }
-
-  return oldest === null ? null : (Date.now() - oldest) / 3_600_000;
-}
-
 /**
  * Tell the owner when work has gone stale.
  *
  * The daily brief says what is waiting. This says what has been waiting *too
- * long* — which is a different signal, and the one that matters when the
- * person doing the work has gone quiet without saying so. A user whose
- * screenshot sits for three days has been abandoned, whatever the queue length
- * says.
+ * long* — a different signal, and the one that matters when the person doing
+ * the work has gone quiet without saying so. A user whose screenshot has sat
+ * for three days has been abandoned, whatever the queue length says.
  *
  * Sent at most once a day, and only when something is actually wrong. An alert
  * that arrives on a good day teaches people to ignore it on a bad one.
@@ -228,6 +210,22 @@ export async function sendStaleWorkAlertIfNeeded(now = new Date()): Promise<bool
   const ownerId = env.PRIMARY_ADMIN_TELEGRAM_ID;
   if (!ownerId) return false;
 
+  /*
+    The "already sent today" check comes first, and that ordering is the whole
+    cost of this function.
+
+    It ran the other way round: both queues were scanned, and only then did it
+    notice it had already alerted. The scheduler ticks every ten minutes, so a
+    queue of five thousand pending items meant scanning it a hundred and
+    forty-four times a day to send at most one message. One cheap read now
+    answers "is there anything to do?", and the expensive part never runs on
+    the other hundred and forty-three ticks.
+  */
+  const today = platformDayKey(now);
+  const ref = db().collection(COLLECTIONS.systemSettings).doc(STALE_STATE_DOC);
+  const snapshot = await ref.get();
+  if ((snapshot.get('lastSentOn') as string | undefined) === today) return false;
+
   const [submissionHours, withdrawalHours] = await Promise.all([
     oldestPendingSubmissionHours(),
     oldestPendingWithdrawalHours(),
@@ -237,10 +235,6 @@ export async function sendStaleWorkAlertIfNeeded(now = new Date()): Promise<bool
   const staleWithdrawal = withdrawalHours !== null && withdrawalHours >= STALE_WITHDRAWAL_HOURS;
   if (!staleSubmission && !staleWithdrawal) return false;
 
-  const today = platformDayKey(now);
-  const ref = db().collection(COLLECTIONS.systemSettings).doc(STALE_STATE_DOC);
-  const snapshot = await ref.get();
-  if ((snapshot.get('lastSentOn') as string | undefined) === today) return false;
   await ref.set({ lastSentOn: today, claimedAt: Timestamp.now() }, { merge: true });
 
   const lines = ['⏳ <b>Work is sitting unattended</b>', ''];
@@ -266,19 +260,57 @@ export async function sendStaleWorkAlertIfNeeded(now = new Date()): Promise<bool
   }
 }
 
+/**
+ * How long the oldest unreviewed submission has been waiting.
+ *
+ * One row, not five hundred. This used to fetch a capped page of the pending
+ * queue and pick the minimum out of it in memory, which cost a read per
+ * pending item and — worse — could miss the genuinely oldest one entirely once
+ * the queue passed the cap, which is exactly when the answer matters.
+ *
+ * Asking the database for the single oldest row is one read at any queue size,
+ * and it is right at every size.
+ */
+async function oldestPendingSubmissionHours(): Promise<number | null> {
+  return oldestPendingAge({
+    collection: COLLECTIONS.taskSubmissions,
+    status: 'PENDING_REVIEW',
+    timestampField: 'submittedAt',
+    label: 'briefing.oldestPendingSubmission',
+  });
+}
+
 /** How long the oldest unpaid withdrawal has been waiting. */
 async function oldestPendingWithdrawalHours(): Promise<number | null> {
-  const snapshot = await db()
-    .collection(COLLECTIONS.withdrawals)
-    .where('status', '==', 'PENDING')
-    .limit(500)
-    .get();
+  return oldestPendingAge({
+    collection: COLLECTIONS.withdrawals,
+    status: 'PENDING',
+    timestampField: 'requestedAt',
+    label: 'briefing.oldestPendingWithdrawal',
+  });
+}
 
-  let oldest: number | null = null;
-  for (const doc of snapshot.docs) {
-    const at = millisOf(doc.get('requestedAt'));
-    if (at > 0 && (oldest === null || at < oldest)) oldest = at;
-  }
+async function oldestPendingAge(options: {
+  collection: string;
+  status: string;
+  timestampField: string;
+  label: string;
+}): Promise<number | null> {
+  const collection = db().collection(options.collection);
+  const base = collection.where('status', '==', options.status);
 
-  return oldest === null ? null : (Date.now() - oldest) / 3_600_000;
+  const snapshot = await runOrderedQuery({
+    base,
+    ordered: base.orderBy(options.timestampField, 'asc').limit(1),
+    limit: 1,
+    // The fallback sorts newest-first, so it is negated to find the oldest.
+    timestampOf: (data) => -millisOf(data[options.timestampField]),
+    label: options.label,
+  });
+
+  const doc = snapshot.docs[0];
+  if (!doc) return null;
+
+  const at = millisOf(doc.get(options.timestampField));
+  return at > 0 ? (Date.now() - at) / 3_600_000 : null;
 }

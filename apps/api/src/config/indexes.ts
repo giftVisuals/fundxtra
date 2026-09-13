@@ -58,6 +58,18 @@ export const REQUIRED_INDEXES: readonly RequiredIndex[] = [
     fields: [{ fieldPath: 'taskId', order: 'ASCENDING' }, { fieldPath: 'submittedAt', order: 'DESCENDING' }],
   },
   {
+    // The oldest unreviewed submission, for the stale-work alert. One row.
+    collectionGroup: 'taskSubmissions',
+    queryScope: 'COLLECTION',
+    fields: [{ fieldPath: 'status', order: 'ASCENDING' }, { fieldPath: 'submittedAt', order: 'ASCENDING' }],
+  },
+  {
+    // The oldest unpaid withdrawal, for the same alert.
+    collectionGroup: 'withdrawals',
+    queryScope: 'COLLECTION',
+    fields: [{ fieldPath: 'status', order: 'ASCENDING' }, { fieldPath: 'requestedAt', order: 'ASCENDING' }],
+  },
+  {
     // Duplicate-submission guard: this user's pending submission for this task.
     collectionGroup: 'taskSubmissions',
     queryScope: 'COLLECTION',
