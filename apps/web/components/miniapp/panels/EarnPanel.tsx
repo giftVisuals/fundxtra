@@ -48,6 +48,7 @@ import { PanelHeader, Section } from './shared';
 export function EarnPanel() {
   const { refresh, applyBalance } = useSession();
   const [category, setCategory] = useState<TaskCategory | 'ALL'>('ALL');
+  const [showingHistory, setShowingHistory] = useState(false);
   const [openTask, setOpenTask] = useState<TaskListItem | null>(null);
 
   /*
@@ -130,11 +131,61 @@ export function EarnPanel() {
     );
   }
 
+  /*
+    Tasks already done, waiting or turned down live on their own page rather
+    than under the list of things to do. They are a record, not an offer, and
+    mixing the two is how a task you have finished ends up looking available.
+  */
+  if (showingHistory) {
+    return (
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '20px 0 16px' }}>
+          <button
+            type="button"
+            onClick={() => setShowingHistory(false)}
+            aria-label="Back to tasks"
+            style={backButtonStyle}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
+          </button>
+          <h1 style={{ flex: 1, fontSize: tokens.typography.size.lg }}>Tasks you have done</h1>
+        </div>
+
+        {other.length === 0 ? (
+          <EmptyState
+            icon={<ClockGlyph />}
+            title="Nothing here yet"
+            description="Tasks you complete, or send for review, will be listed here."
+          />
+        ) : (
+          other.map((task) => (
+            <TaskCard key={task.id} task={task} onOpen={() => setOpenTask(task)} />
+          ))
+        )}
+      </div>
+    );
+  }
+
   return (
     <div>
       <PanelHeader
         title="Earn"
         subtitle="Complete sponsored tasks and get paid in Naira."
+        action={
+          other.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setShowingHistory(true)}
+              aria-label={`Tasks you have done (${String(other.length)})`}
+              style={historyButtonStyle}
+            >
+              <ClockGlyph />
+              <span style={{ fontSize: tokens.typography.size.xs, fontWeight: tokens.typography.weight.semibold }}>
+                {other.length}
+              </span>
+            </button>
+          ) : undefined
+        }
       />
 
       {categories.length > 1 && (
@@ -172,14 +223,6 @@ export function EarnPanel() {
       {available.length > 0 && (
         <Section title={`${available.length} available`}>
           {available.map((task) => (
-            <TaskCard key={task.id} task={task} onOpen={() => setOpenTask(task)} />
-          ))}
-        </Section>
-      )}
-
-      {other.length > 0 && (
-        <Section title="Already handled">
-          {other.map((task) => (
             <TaskCard key={task.id} task={task} onOpen={() => setOpenTask(task)} />
           ))}
         </Section>
@@ -449,3 +492,47 @@ function CategoryGlyph({ category }: { category: TaskCategory }) {
       );
   }
 }
+
+/** A clock, for the record of tasks already dealt with. */
+function ClockGlyph() {
+  return (
+    <svg
+      width="17"
+      height="17"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.9}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+const historyButtonStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '7px 12px',
+  flex: 'none',
+  background: tokens.semantic.surface,
+  color: tokens.semantic.brandInk,
+  border: `1px solid ${tokens.semantic.border}`,
+  borderRadius: tokens.radii.pill,
+};
+
+const backButtonStyle: React.CSSProperties = {
+  display: 'grid',
+  placeItems: 'center',
+  width: 34,
+  height: 34,
+  flex: 'none',
+  background: tokens.semantic.bgSubtle,
+  color: tokens.semantic.brandInk,
+  border: `1px solid ${tokens.semantic.border}`,
+  borderRadius: tokens.radii.pill,
+};
