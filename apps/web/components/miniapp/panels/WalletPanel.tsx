@@ -21,6 +21,7 @@ import {
   type Withdrawal,
 } from '@fundxtra/shared';
 import { api, errorMessage, errorRequestId } from '@/lib/api';
+import { useResource } from '@/lib/resource';
 import { supportUrl } from '@/lib/config';
 import { haptic } from '@/lib/telegram';
 import { useSession } from '@/lib/session';
@@ -70,10 +71,6 @@ interface WalletPayload {
  */
 export function WalletPanel() {
   const { user, refresh, applyBalance } = useSession();
-  const [wallet, setWallet] = useState<WalletPayload | null>(null);
-  const [transactions, setTransactions] = useState<TransactionRow[] | null>(null);
-  const [withdrawals, setWithdrawals] = useState<Withdrawal[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<'withdraw' | 'rewards' | null>(null);
   /*
     The chosen reward lives here, not inside RewardsSheet, because sheets must
@@ -93,25 +90,34 @@ export function WalletPanel() {
   const [view, setView] = useState<'wallet' | 'withdraw'>('wallet');
   const [receiptFor, setReceiptFor] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const [walletResult, historyResult, withdrawalResult] = await Promise.all([
-        api.get<WalletPayload>('/wallet'),
-        api.get<{ items: TransactionRow[] }>('/wallet/transactions?limit=20'),
-        api.get<{ withdrawals: Withdrawal[] }>('/wallet/withdrawals'),
-      ]);
-      setWallet(walletResult);
-      setTransactions(historyResult.items);
-      setWithdrawals(withdrawalResult.withdrawals);
-    } catch (caught) {
-      setError(errorMessage(caught));
-    }
-  }, []);
+  /*
+    Cached, with a shorter life than the rest of the app because this is the
+    money screen. Thirty seconds is long enough that tapping between tabs costs
+    nothing, and short enough that nobody is looking at a stale balance —
+    and every path that moves money clears these outright rather than waiting
+    for them to expire.
+  */
+  const walletResource = useResource<WalletPayload>('/wallet', { ttlMs: 30_000 });
+  const historyResource = useResource<{ items: TransactionRow[] }>(
+    '/wallet/transactions?limit=20',
+    { ttlMs: 30_000 },
+  );
+  const withdrawalResource = useResource<{ withdrawals: Withdrawal[] }>('/wallet/withdrawals', {
+    ttlMs: 30_000,
+  });
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const wallet = walletResource.data;
+  const transactions = historyResource.data?.items ?? null;
+  const withdrawals = withdrawalResource.data?.withdrawals ?? null;
+  const error = walletResource.error ?? historyResource.error ?? withdrawalResource.error;
+
+  const load = useCallback(async () => {
+    await Promise.all([
+      walletResource.reload(),
+      historyResource.reload(),
+      withdrawalResource.reload(),
+    ]);
+  }, [walletResource, historyResource, withdrawalResource]);
 
   const afterMoneyMoved = useCallback(
     async (balanceAfterKobo?: number) => {

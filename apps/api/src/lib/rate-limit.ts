@@ -32,6 +32,7 @@ interface Window {
 export interface RateLimiter {
   consume(key: string, limit: number, windowSeconds: number): RateLimitResult;
   reset(key: string): void;
+  resetAll(): void;
 }
 
 export class MemoryRateLimiter implements RateLimiter {
@@ -61,6 +62,11 @@ export class MemoryRateLimiter implements RateLimiter {
 
   reset(key: string): void {
     this.windows.delete(key);
+  }
+
+  /** Forget every window. For tests, and for an operator clearing a lockout. */
+  resetAll(): void {
+    this.windows.clear();
   }
 
   /** Drop expired windows so the map cannot grow without bound. */

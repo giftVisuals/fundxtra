@@ -3,6 +3,7 @@ import type { SecurityEvent, SecurityEventType } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
 import { newEventId } from '../lib/ids';
 import { logger } from '../lib/logger';
+import { Throttle } from '../lib/cache';
 import { toIsoRequired } from '../lib/time';
 
 /**
@@ -41,6 +42,23 @@ export interface SecurityEventInput {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * Events that happen once per app open rather than once per incident.
+ *
+ * Telegram re-opens a Mini App constantly — every tab back into the chat and
+ * out again — so SESSION_ISSUED was writing a row every time somebody looked
+ * at their balance. It is worth keeping (it answers "when was this account
+ * last used") but not at that resolution, so one row per user per hour stands
+ * in for all of them. Nothing that indicates a problem is throttled: a failed
+ * PIN, a blocked referral, a forbidden request all still write every time.
+ */
+const HIGH_FREQUENCY: ReadonlySet<SecurityEventType> = new Set<SecurityEventType>([
+  'SESSION_ISSUED',
+  'INITDATA_EXPIRED',
+]);
+
+const highFrequencyWrites = new Throttle(60 * 60_000);
+
 export function recordSecurityEvent(input: SecurityEventInput): void {
   const severity = SEVERITY[input.type] ?? 'INFO';
   const payload = {
@@ -59,6 +77,13 @@ export function recordSecurityEvent(input: SecurityEventInput): void {
     { securityEvent: input.type, userId: input.userId, ...input.metadata },
     input.message,
   );
+
+  // Logged above either way; only the stored row is throttled, so nothing is
+  // lost from the operator's view of what happened.
+  if (HIGH_FREQUENCY.has(input.type)) {
+    const key = `${input.type}:${input.userId ?? input.telegramId ?? input.ip ?? 'anon'}`;
+    if (!highFrequencyWrites.claim(key)) return;
+  }
 
   void db()
     .collection(COLLECTIONS.securityEvents)

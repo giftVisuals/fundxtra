@@ -17,6 +17,7 @@ import {
   type VerificationMethod,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
+import { SharedCache, Throttle } from '../lib/cache';
 import { AppError, notFound } from '../lib/errors';
 import { deterministicId, newTaskId } from '../lib/ids';
 import { logger } from '../lib/logger';
@@ -56,6 +57,56 @@ export interface TaskAvailability {
 }
 
 /** Whether a task can accept one more completion right now. */
+/**
+ * The live campaign list, shared by everybody.
+ *
+ * This is the single biggest read in the platform and it is the *same answer*
+ * for every user — campaigns do not differ by who is asking, only the per-user
+ * state layered on top does. Read per request, twenty campaigns cost twenty
+ * reads every time anyone opens the Earn tab; ten thousand users doing that
+ * once an hour is two hundred thousand reads an hour for a list that changed
+ * maybe twice a day.
+ *
+ * Cached for a minute instead. A campaign that appears up to sixty seconds
+ * late is not a problem anybody can perceive; the parts that must be exact —
+ * whether the budget is spent, whether this user already completed it — are
+ * re-read inside the completion transaction, which is the only place being
+ * wrong would cost money.
+ *
+ * Anything that edits a campaign calls `invalidateTaskCache`, so admin changes
+ * show up immediately rather than a minute later.
+ */
+const taskListCache = new SharedCache<{ id: string; data: Record<string, unknown> }[]>(
+  60_000,
+  'tasks',
+);
+
+/**
+ * How many campaigns are live, from the shared cache.
+ *
+ * Every dashboard shows this and it is identical for everyone, so it has no
+ * business being its own query per user.
+ */
+export async function countActiveTasks(): Promise<number> {
+  const docs = await listLiveTaskDocs();
+  return docs.filter((doc) => doc.data.status === 'ACTIVE').length;
+}
+
+export function invalidateTaskCache(): void {
+  taskListCache.invalidate();
+}
+
+async function listLiveTaskDocs(): Promise<{ id: string; data: Record<string, unknown> }[]> {
+  return taskListCache.get(async () => {
+    const snapshot = await db()
+      .collection(COLLECTIONS.tasks)
+      .where('status', 'in', ['ACTIVE', 'COMPLETED'])
+      .limit(120)
+      .get();
+    return snapshot.docs.map((doc) => ({ id: doc.id, data: doc.data() }));
+  });
+}
+
 export function taskAvailability(task: Task): TaskAvailability {
   // COMPLETED specifically means "fully claimed" in this system, so it earns
   // the accurate, encouraging message ("this campaign is fully claimed, more
@@ -222,6 +273,8 @@ export async function createTask(
   if (record.status === 'ACTIVE') {
     bumpStats({ activeCampaigns: 1, activeCampaignBudgetKobo: budgetKobo });
   }
+  // Admin edits must show up now, not when the cache happens to expire.
+  invalidateTaskCache();
   logger.info({ taskId, rewardKobo, budgetKobo, maxCompletions }, 'Task created');
   return mapTask(taskId, record);
 }
@@ -242,7 +295,7 @@ export async function updateTask(
   const settings = await getSettings();
   const ceiling = Math.min(settings.tasks.maxRewardKobo, LIMITS.MAX_TASK_REWARD_KOBO);
 
-  return firestore.runTransaction(async (tx) => {
+  const updated = await firestore.runTransaction(async (tx) => {
     const snapshot = await tx.get(ref);
     if (!snapshot.exists) throw notFound('that task');
     const current = mapTask(snapshot.id, snapshot.data() ?? {});
@@ -312,6 +365,9 @@ export async function updateTask(
     tx.update(ref, update);
     return mapTask(taskId, { ...(snapshot.data() ?? {}), ...update });
   });
+
+  invalidateTaskCache();
+  return updated;
 }
 
 export async function setTaskStatus(taskId: string, status: TaskStatus): Promise<Task> {
@@ -329,6 +385,7 @@ export async function setTaskStatus(taskId: string, status: TaskStatus): Promise
       activeCampaignBudgetKobo: isActive ? task.budgetKobo : -task.budgetKobo,
     });
   }
+  invalidateTaskCache();
   return { ...task, status };
 }
 
@@ -414,15 +471,47 @@ export function releaseBudgetIn(
   tx.update(db().collection(COLLECTIONS.tasks).doc(task.id), update);
 }
 
-/** Sweep tasks whose end date has passed. Called from the task list endpoint. */
+/**
+ * Sweep tasks whose end date has passed.
+ *
+ * Called from the task list endpoint, which means it used to run on every
+ * single Earn-tab open — a full scan of active campaigns per user per visit,
+ * for a job whose entire purpose is to notice something that happens at most
+ * once per campaign. Once every five minutes across the whole process says the
+ * same thing: a campaign stays listed for a few minutes past its end date, and
+ * `taskAvailability` already refuses to let anybody complete it in the
+ * meantime, so nothing can be earned from the delay.
+ */
+const expirySweep = new Throttle(5 * 60_000);
+
+/** Lower bound for "has an end date at all". See the sweep below. */
+const EPOCH = Timestamp.fromMillis(0);
+
 export async function expireFinishedTasks(): Promise<number> {
+  if (!expirySweep.claim('sweep')) return 0;
+  return runExpirySweep();
+}
+
+/** The sweep itself, unthrottled — for the admin trigger and for tests. */
+export async function runExpirySweep(): Promise<number> {
   const now = Timestamp.now();
   const collection = db().collection(COLLECTIONS.tasks);
 
   // The task list calls this on every load, so a missing composite index here
   // would take the whole earn screen down rather than just delay a sweep.
   const { docs } = await runFilteredQuery({
-    narrow: collection.where('status', '==', 'ACTIVE').where('endsAt', '<=', now).limit(50),
+    /*
+      The lower bound is not redundant. Firestore orders null below every other
+      type, so `endsAt <= now` on its own also matches every campaign with no
+      end date at all — which would expire exactly the campaigns that are meant
+      to run forever. Two range filters on the same field are allowed, and the
+      pair says what was always meant: has an end date, and it has passed.
+    */
+    narrow: collection
+      .where('status', '==', 'ACTIVE')
+      .where('endsAt', '>', EPOCH)
+      .where('endsAt', '<=', now)
+      .limit(50),
     base: collection.where('status', '==', 'ACTIVE'),
     matches: (doc) => {
       const endsAt = doc.get('endsAt');
@@ -440,6 +529,7 @@ export async function expireFinishedTasks(): Promise<number> {
     batch.update(doc.ref, { status: 'EXPIRED' as TaskStatus, updatedAt: Timestamp.now() });
   }
   await batch.commit();
+  invalidateTaskCache();
   logger.info({ count: expiring.length }, 'Expired finished tasks');
   return expiring.length;
 }
@@ -459,12 +549,8 @@ export interface UserTaskState {
 export async function listTasksForUser(userId: string): Promise<TaskListItem[]> {
   const firestore = db();
 
-  const [taskSnapshot, completionSnapshot, submissionSnapshot] = await Promise.all([
-    firestore
-      .collection(COLLECTIONS.tasks)
-      .where('status', 'in', ['ACTIVE', 'COMPLETED'])
-      .limit(120)
-      .get(),
+  const [taskDocs, completionSnapshot, submissionSnapshot] = await Promise.all([
+    listLiveTaskDocs(),
     firestore.collection(COLLECTIONS.taskCompletions).where('userId', '==', userId).get(),
     firestore.collection(COLLECTIONS.taskSubmissions).where('userId', '==', userId).get(),
   ]);
@@ -490,8 +576,8 @@ export async function listTasksForUser(userId: string): Promise<TaskListItem[]> 
   }
 
   const items: TaskListItem[] = [];
-  for (const doc of taskSnapshot.docs) {
-    const task = mapTask(doc.id, doc.data());
+  for (const doc of taskDocs) {
+    const task = mapTask(doc.id, doc.data);
     const availability = taskAvailability(task);
     const completions = completionsByTask.get(task.id) ?? 0;
     const submission = submissionByTask.get(task.id);

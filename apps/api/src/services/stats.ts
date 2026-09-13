@@ -43,19 +43,63 @@ export type StatsDelta = Partial<{
  * Apply a delta. Fire-and-forget: statistics are a reporting concern and must
  * never fail a user's action. Misses are recoverable with `recomputeStats`.
  */
-export function bumpStats(delta: StatsDelta): void {
-  const payload: Record<string, unknown> = { updatedAt: Timestamp.now() };
-  for (const [key, value] of Object.entries(delta)) {
-    if (typeof value === 'number' && value !== 0) payload[key] = FieldValue.increment(value);
-  }
-  if (Object.keys(payload).length === 1) return;
+/**
+ * Platform counters, accumulated in memory and flushed on a timer.
+ *
+ * These are totals on a dashboard — "tasks completed", "naira paid out". They
+ * were written straight through, one Firestore write per event, which meant a
+ * busy minute cost a write per thing that happened. Nobody is watching the
+ * dashboard at that resolution, and a counter that is five seconds behind is
+ * indistinguishable from one that is not.
+ *
+ * Adding up in memory first collapses a burst into a single write. The cost is
+ * that a crash loses at most one window of counters — acceptable precisely
+ * because these are statistics and not the ledger. Anything that must survive
+ * a crash is written transactionally elsewhere; nothing here is money.
+ */
+const FLUSH_INTERVAL_MS = 5_000;
 
-  void statsRef()
-    .set(payload, { merge: true })
-    .catch((error: unknown) => {
-      logger.warn({ err: error, delta }, 'Failed to update platform statistics');
-    });
+let pending: Record<string, number> = {};
+let flushTimer: NodeJS.Timeout | null = null;
+
+export function bumpStats(delta: StatsDelta): void {
+  let changed = false;
+  for (const [key, value] of Object.entries(delta)) {
+    if (typeof value === 'number' && value !== 0) {
+      pending[key] = (pending[key] ?? 0) + value;
+      changed = true;
+    }
+  }
+  if (!changed || flushTimer) return;
+
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    void flushStats();
+  }, FLUSH_INTERVAL_MS);
+  // Never hold the process open for a counter.
+  flushTimer.unref?.();
 }
+
+/**
+ * Write what has accumulated. Exported so a shutdown, or a test, can make the
+ * timer's work happen now rather than waiting for it.
+ */
+export async function flushStats(): Promise<void> {
+  const batch = pending;
+  pending = {};
+  const keys = Object.keys(batch);
+  if (keys.length === 0) return;
+
+  const payload: Record<string, unknown> = { updatedAt: Timestamp.now() };
+  for (const key of keys) payload[key] = FieldValue.increment(batch[key] ?? 0);
+
+  try {
+    await statsRef().set(payload, { merge: true });
+  } catch (error) {
+    logger.warn({ err: error, keys }, 'Failed to update platform statistics');
+  }
+}
+
 
 /**
  * Count a signup against the channel it came from.

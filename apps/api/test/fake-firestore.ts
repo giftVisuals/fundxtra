@@ -141,7 +141,16 @@ class FakeQuery {
   count(): { get: () => Promise<{ data: () => { count: number } }> } {
     return {
       get: async () => {
+        const before = this.store.metrics.reads;
         const docs = this.store.query(this);
+        /*
+          Firestore bills an aggregation by index entries scanned, not by
+          documents returned: one read per 1000, minimum one. Billing it per
+          document — as a plain query is billed — would make a count look
+          hundreds of times more expensive here than it is in production, and
+          send the read budget chasing the wrong thing.
+        */
+        this.store.metrics.reads = before + Math.max(1, Math.ceil(docs.length / 1000));
         return { data: () => ({ count: docs.length }) };
       },
     };
@@ -256,6 +265,22 @@ export class FakeFirestore {
   onBeforeCommit: (() => void) | null = null;
   transactionAttempts = 0;
 
+  /**
+   * Billable operations, counted the way Firestore bills them.
+   *
+   * A document read is one read whether it came from `doc().get()` or from a
+   * query returning it; a query that matches nothing still bills one. Writes
+   * are counted per document written. This exists so the read and write budget
+   * can be asserted in a test instead of estimated — the measured problem was
+   * one user costing 966 reads, and a number that large is only ever found by
+   * counting.
+   */
+  metrics = { reads: 0, writes: 0 };
+
+  resetMetrics(): void {
+    this.metrics = { reads: 0, writes: 0 };
+  }
+
   settings(): void {
     /* no-op; the real SDK takes ignoreUndefinedProperties here */
   }
@@ -270,6 +295,12 @@ export class FakeFirestore {
   }
 
   read(path: string): Stored | undefined {
+    this.metrics.reads += 1;
+    return this.documents.get(path);
+  }
+
+  /** A read that is not billed — for test fixtures inspecting the store. */
+  peek(path: string): Stored | undefined {
     return this.documents.get(path);
   }
 
@@ -328,11 +359,15 @@ export class FakeFirestore {
 
   /** Run a query against the store. */
   query(spec: FakeQuery): FakeDocumentSnapshot[] {
-    return evaluateQuery(this, this.documents, spec);
+    const docs = evaluateQuery(this, this.documents, spec);
+    // Firestore bills a minimum of one read for a query that matches nothing.
+    this.metrics.reads += Math.max(1, docs.length);
+    return docs;
   }
 
   /** Apply writes atomically: validate every one, then mutate. */
   commit(writes: Write[]): void {
+    this.metrics.writes += writes.length;
     for (const write of writes) {
       const existing = this.documents.get(write.path);
       if (write.kind === 'create' && existing) {

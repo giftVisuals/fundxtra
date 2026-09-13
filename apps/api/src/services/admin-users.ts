@@ -14,7 +14,7 @@ import { logger } from '../lib/logger';
 import { startOfPlatformDay } from '../lib/time';
 import { auditUserBalance, idempotencyKey, listUserTransactions, postEntry } from './ledger';
 import { recordAudit } from './audit';
-import { mapUser, requireUser, setUserStatus } from './users';
+import { invalidateUser, mapUser, requireUser, setUserStatus } from './users';
 import { listReferrals } from './referrals';
 import { listUserWithdrawals, pendingWithdrawalTotals } from './withdrawals';
 import { listUserRedemptions } from './rewards';
@@ -191,6 +191,9 @@ export async function adjustBalance(input: {
     reason: input.reason,
   });
 
+  // The target is a different person in a different session, so their cached
+  // document will not be cleared by the request that changed it.
+  invalidateUser(input.userId);
   return { transactionId: result.transaction.id, balanceAfterKobo: result.balanceAfterKobo };
 }
 
@@ -226,6 +229,7 @@ export async function changeUserStatus(input: {
   });
 
   await setUserStatus(user.id, input.status);
+  invalidateUser(input.userId);
   return { ...user, status: input.status };
 }
 

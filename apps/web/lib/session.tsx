@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { DashboardSummary, UserProfile } from '@fundxtra/shared';
+import { invalidateResources } from './resource';
 import { api, ApiError, setSessionToken, setUnauthenticatedHandler } from './api';
 import { initialiseTelegram, insideTelegram, rawInitData, startParam } from './telegram';
 
@@ -221,6 +222,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     initialiseTelegram();
     setUnauthenticatedHandler(() => {
       setSessionToken(null);
+      // Whoever signs in next must not be shown the last account's data.
+      invalidateResources();
       setState('BOOTING');
       void authenticate();
     });

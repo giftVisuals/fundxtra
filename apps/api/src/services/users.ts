@@ -10,6 +10,7 @@ import {
   type UserStatus,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
+import { KeyedCache } from '../lib/cache';
 import { AppError, notFound } from '../lib/errors';
 import { newReferralCode } from '../lib/ids';
 import { nowIso, toIso, toIsoRequired } from '../lib/time';
@@ -18,6 +19,7 @@ import type { TelegramUser } from '../lib/telegram-auth';
 import { getSettings, withdrawalAvailability } from './settings';
 import { bumpStats, countSignup } from './stats';
 import { sumTodayCredits } from './ledger';
+import { countActiveTasks } from './tasks';
 
 /**
  * Users.
@@ -30,9 +32,76 @@ import { sumTodayCredits } from './ledger';
  * cannot produce two users.
  */
 
-export async function findUser(userId: string): Promise<User | null> {
-  const snapshot = await db().collection(COLLECTIONS.users).doc(userId).get();
-  return snapshot.exists ? mapUser(snapshot.id, snapshot.data() ?? {}) : null;
+/**
+ * The user document, briefly cached.
+ *
+ * Every authenticated request re-reads the user — that is deliberate, because
+ * balance and admin status must never be carried in a token. But a single
+ * screen fires several requests at once (the wallet asks for its summary, its
+ * history and its withdrawals in parallel), and each was paying for the same
+ * document a few milliseconds apart.
+ *
+ * A few seconds of cache collapses those into one read. It is safe only
+ * because of a rule enforced in the auth middleware: a request that can change
+ * anything (anything but GET) clears the entry on the way in *and* on the way
+ * out, so the request that moves money reads fresh and leaves nothing stale
+ * behind it. Admin actions against somebody else's account call
+ * `invalidateUser` directly, for the same reason.
+ *
+ * The TTL is the backstop, not the mechanism. If it were the mechanism, a
+ * balance could be wrong on screen for its duration, and that is not a
+ * trade worth making for a read.
+ */
+const userCache = new KeyedCache<User>(8_000, 5_000, 'users');
+
+export function invalidateUser(userId: string): void {
+  userCache.invalidate(userId);
+}
+
+/** For tests, and for a process that has just had its clock moved. */
+export function clearUserCache(): void {
+  userCache.clear();
+  userReads.clear();
+}
+
+/**
+ * Reads already on their way, shared rather than repeated.
+ *
+ * A TTL alone does not help the case that actually costs the most: the wallet
+ * screen fires three requests at the same instant, so all three miss an empty
+ * cache together and all three pay for the same document. Joining the read
+ * already in flight is what turns that into one.
+ */
+const userReads = new Map<string, Promise<User | null>>();
+
+export async function findUser(
+  userId: string,
+  options: { fresh?: boolean } = {},
+): Promise<User | null> {
+  if (!options.fresh) {
+    const cached = userCache.get(userId);
+    if (cached) return cached;
+
+    const pending = userReads.get(userId);
+    if (pending) return pending;
+  }
+
+  const read = db()
+    .collection(COLLECTIONS.users)
+    .doc(userId)
+    .get()
+    .then((snapshot) => {
+      if (!snapshot.exists) return null;
+      const user = mapUser(snapshot.id, snapshot.data() ?? {});
+      userCache.set(userId, user);
+      return user;
+    })
+    .finally(() => {
+      userReads.delete(userId);
+    });
+
+  userReads.set(userId, read);
+  return read;
 }
 
 export async function requireUser(userId: string): Promise<User> {
@@ -244,13 +313,9 @@ export async function buildDashboard(user: User): Promise<DashboardSummary> {
 
   const [today, availableTasks, pendingSubmissions] = await Promise.all([
     sumTodayCredits(user.id),
-    db()
-      .collection(COLLECTIONS.tasks)
-      .where('status', '==', 'ACTIVE')
-      .count()
-      .get()
-      .then((result) => result.data().count)
-      .catch(() => 0),
+    // From the shared campaign cache rather than its own aggregation: this is
+    // the same number for every user, and it is already in memory.
+    countActiveTasks().catch(() => 0),
     db()
       .collection(COLLECTIONS.taskSubmissions)
       .where('userId', '==', user.id)

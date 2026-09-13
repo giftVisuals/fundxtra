@@ -10,6 +10,7 @@ import { COLLECTIONS, db } from '../lib/firebase';
 import { env } from '../config/env';
 import { nowIso, toIso, toIsoRequired } from '../lib/time';
 import { logger } from '../lib/logger';
+import { Throttle } from '../lib/cache';
 
 /**
  * Admins.
@@ -59,8 +60,10 @@ export async function resolveAdmin(
 ): Promise<Admin | null> {
   if (isPrimaryAdmin(telegramId)) {
     // Keep a database row for the primary admin so the admin list shows them,
-    // but never depend on it for authorisation.
-    void ensurePrimaryAdminRecord(username);
+    // but never depend on it for authorisation. Throttled: the row does not
+    // change, and writing it on every request was costing a write per request
+    // for the one person who uses the console most.
+    if (primaryAdminWrites.claim(telegramId)) void ensurePrimaryAdminRecord(username);
     return primaryAdmin(username);
   }
 
@@ -77,6 +80,8 @@ export async function resolveAdmin(
   }
   return null;
 }
+
+const primaryAdminWrites = new Throttle(12 * 60 * 60_000);
 
 async function ensurePrimaryAdminRecord(username: string | null): Promise<void> {
   try {
@@ -269,7 +274,19 @@ export async function removeAdmin(telegramId: string): Promise<void> {
     .update({ active: false, updatedAt: Timestamp.now() });
 }
 
+/**
+ * Record that an admin is active — at most once an hour.
+ *
+ * This used to write on every admin request. Nothing reads `lastActiveAt` at
+ * finer resolution than "today", so the other writes bought nothing and were a
+ * large share of the write bill on their own: one admin clicking around the
+ * console generated hundreds.
+ */
+const adminTouches = new Throttle(60 * 60_000);
+
 export function touchAdmin(telegramId: string): void {
+  if (!adminTouches.claim(telegramId)) return;
+
   void db()
     .collection(COLLECTIONS.admins)
     .doc(telegramId)

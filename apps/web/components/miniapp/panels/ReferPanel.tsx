@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   formatNaira,
   relativeTime,
@@ -8,7 +8,7 @@ import {
   type ReferralStatus,
   type ReferralSummary,
 } from '@fundxtra/shared';
-import { api, errorMessage } from '@/lib/api';
+import { useResource } from '@/lib/resource';
 import { supportUrl } from '@/lib/config';
 import { haptic, openExternal } from '@/lib/telegram';
 import {
@@ -53,22 +53,11 @@ interface ReferralPayload {
  * on by nudging them.
  */
 export function ReferPanel() {
-  const [data, setData] = useState<ReferralPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      setData(await api.get<ReferralPayload>('/referrals'));
-    } catch (caught) {
-      setError(errorMessage(caught));
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // Cached: leaving and returning to this tab should not re-read the referral
+  // list from Firestore every time.
+  const { data, error, reload: load } = useResource<ReferralPayload>('/referrals');
 
   const copyLink = useCallback(async (link: string) => {
     try {

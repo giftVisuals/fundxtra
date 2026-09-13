@@ -2,7 +2,7 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { ERROR_CODES, hasPermission, type Permission } from '@fundxtra/shared';
 import { AppError, forbidden, unauthenticated } from '../lib/errors';
 import { bearerToken, verifySession } from '../lib/session';
-import { assertUsable, findUser } from '../services/users';
+import { assertUsable, findUser, invalidateUser } from '../services/users';
 import { resolveAdmin, touchAdmin } from '../services/admins';
 import { getSettings } from '../services/settings';
 import { recordSecurityEvent } from '../services/security';
@@ -37,13 +37,34 @@ export const requireSession: RequestHandler = (req, _res, next) => {
   }
 };
 
-/** Load the user fresh from Firestore and reject unusable accounts. */
-export const loadUser: RequestHandler = async (req, _res, next) => {
+/**
+ * Load the user from Firestore and reject unusable accounts.
+ *
+ * Served from a few seconds of cache for GET requests, which is what makes a
+ * screen that fires three calls at once cost one read instead of three.
+ *
+ * Anything that is not a GET reads fresh and clears the cache twice: once
+ * before, so the request that moves money sees the true balance, and once
+ * after it has finished, so whatever it wrote cannot be served stale to the
+ * next reader. That pair is the entire safety argument for caching a document
+ * that holds a balance — the TTL is only there for what this misses.
+ */
+export const loadUser: RequestHandler = async (req, res, next) => {
   try {
     if (!req.session) throw unauthenticated('Session missing');
 
-    const user = await findUser(req.session.sub);
-    if (!user) throw unauthenticated(`Session subject ${req.session.sub} no longer exists`);
+    const userId = req.session.sub;
+    const mutating = req.method !== 'GET' && req.method !== 'HEAD';
+
+    if (mutating) {
+      invalidateUser(userId);
+      res.on('finish', () => {
+        invalidateUser(userId);
+      });
+    }
+
+    const user = await findUser(userId, { fresh: mutating });
+    if (!user) throw unauthenticated(`Session subject ${userId} no longer exists`);
 
     assertUsable(user);
     req.user = user;

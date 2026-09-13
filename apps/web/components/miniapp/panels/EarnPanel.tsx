@@ -15,6 +15,7 @@ import {
   type TaskListItem,
 } from '@fundxtra/shared';
 import { api, ApiError, errorMessage, errorRequestId } from '@/lib/api';
+import { invalidateResources, useResource } from '@/lib/resource';
 import { supportUrl } from '@/lib/config';
 import { haptic, openExternal } from '@/lib/telegram';
 import { useSession } from '@/lib/session';
@@ -61,8 +62,6 @@ type CompletionState =
 
 export function EarnPanel() {
   const { refresh, applyBalance } = useSession();
-  const [tasks, setTasks] = useState<TaskListItem[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [category, setCategory] = useState<TaskCategory | 'ALL'>('ALL');
   const [openTask, setOpenTask] = useState<TaskListItem | null>(null);
 
@@ -79,29 +78,25 @@ export function EarnPanel() {
       : new URLSearchParams(window.location.search).get('task'),
   );
 
-  const load = useCallback(async () => {
-    setLoadError(null);
-    try {
-      const result = await api.get<{ tasks: TaskListItem[] }>('/tasks');
-      setTasks(result.tasks);
+  // Cached: the campaign list is the same for everybody and changes rarely, so
+  // revisiting this tab should not re-read it.
+  const {
+    data: taskPayload,
+    error: loadError,
+    reload: load,
+  } = useResource<{ tasks: TaskListItem[] }>('/tasks');
 
-      const wanted = requestedTask.current;
-      if (wanted) {
-        requestedTask.current = null;
-        const match = result.tasks.find((task) => task.id === wanted);
-        // A link to a task that has ended or is fully claimed simply shows the
-        // list, which already explains why nothing is there.
-        if (match) setOpenTask(match);
-      }
-    } catch (caught) {
-      setLoadError(errorMessage(caught));
-      setTasks([]);
-    }
-  }, []);
+  const tasks = taskPayload?.tasks ?? null;
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    const wanted = requestedTask.current;
+    if (!wanted || !tasks) return;
+    requestedTask.current = null;
+    // A link to a task that has ended or is fully claimed simply shows the
+    // list, which already explains why nothing is there.
+    const match = tasks.find((task) => task.id === wanted);
+    if (match) setOpenTask(match);
+  }, [tasks]);
 
   const categories = useMemo(() => {
     if (!tasks) return [];
@@ -121,6 +116,8 @@ export function EarnPanel() {
   const handleCompleted = useCallback(
     async (balanceAfterKobo?: number) => {
       if (typeof balanceAfterKobo === 'number') applyBalance(balanceAfterKobo);
+      // Money moved, so nothing cached about the wallet is trustworthy now.
+      invalidateResources('/wallet');
       await Promise.all([load(), refresh()]);
     },
     [applyBalance, load, refresh],
