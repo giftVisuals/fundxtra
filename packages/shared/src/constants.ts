@@ -44,6 +44,14 @@ export const LIMITS = {
   PIN_LOCK_MINUTES: 15,
   /** Largest accepted screenshot upload. */
   MAX_PROOF_BYTES: 5 * 1024 * 1024,
+  /**
+   * Largest receipt image the bot will relay back to its own user.
+   *
+   * The app paints these itself at a known size — a real one is around 300KB —
+   * so this is a ceiling on a malformed or hostile request, not a working
+   * limit anybody should ever meet.
+   */
+  MAX_RECEIPT_BYTES: 3 * 1024 * 1024,
   /** Session lifetime for a Mini App JWT. */
   SESSION_TTL_MINUTES: 12 * 60,
   /** How long Telegram `initData` stays acceptable (replay window). */

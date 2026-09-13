@@ -1,5 +1,8 @@
 import { Router } from 'express';
+import multer from 'multer';
 import {
+  ERROR_CODES,
+  LIMITS,
   paginationSchema,
   redeemAirtimeSchema,
   redeemDataSchema,
@@ -8,6 +11,7 @@ import {
   withdrawalRequestSchema,
   type Kobo,
 } from '@fundxtra/shared';
+import { AppError } from '../lib/errors';
 import { RATE_LIMITS } from '../lib/rate-limit';
 import { authenticated, pinProtected } from '../middleware/auth';
 import { rateLimit } from '../middleware/rate-limit';
@@ -15,6 +19,7 @@ import { ok } from '../middleware/respond';
 import { parsed, pathParam, query, validateBody, validateQuery } from '../middleware/validate';
 import { checkPin } from '../services/auth';
 import { getTransactionReceipt, listUserTransactions } from '../services/ledger';
+import { sendReceiptToTelegram } from '../services/receipts';
 import { listRewardCatalogue, listUserRedemptions, redeem } from '../services/rewards';
 import { getSettings, withdrawalAvailability } from '../services/settings';
 import { cancelWithdrawal, listUserWithdrawals, requestWithdrawal } from '../services/withdrawals';
@@ -89,6 +94,53 @@ walletRouter.get('/transactions/:transactionId', ...authenticated, async (req, r
     next(error);
   }
 });
+
+/** The receipt image the app painted, held in memory only long enough to relay. */
+const receiptUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: LIMITS.MAX_RECEIPT_BYTES, files: 1 },
+});
+
+/**
+ * Have the bot post this receipt into the user's own Telegram chat.
+ *
+ * Telegram's in-app browser cannot save a file, so the Mini App has no way to
+ * hand anybody a copy of their receipt. The bot does — and the chat keeps it,
+ * which is better than a download anyway.
+ *
+ * Not PIN-gated, for the same reason reading the receipt is not: it moves no
+ * money, and it can only ever deliver to the requester's own chat. Rate
+ * limited because each call makes the server upload a few hundred kilobytes to
+ * Telegram.
+ */
+walletRouter.post(
+  '/transactions/:transactionId/send-to-telegram',
+  ...authenticated,
+  rateLimit(RATE_LIMITS.upload, { name: 'receipt-send', by: 'user' }),
+  receiptUpload.single('receipt'),
+  async (req, res, next) => {
+    try {
+      const file = req.file;
+      if (!file) {
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, {
+          fields: { receipt: 'The receipt image did not arrive' },
+        });
+      }
+
+      ok(
+        res,
+        await sendReceiptToTelegram({
+          user: req.user!,
+          transactionId: pathParam(req, 'transactionId'),
+          image: file.buffer,
+          declaredMimeType: file.mimetype,
+        }),
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
 walletRouter.get('/withdrawals', ...authenticated, async (req, res, next) => {
   try {

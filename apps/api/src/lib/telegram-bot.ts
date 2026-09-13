@@ -88,6 +88,88 @@ async function call<T>(method: string, payload: Record<string, unknown>): Promis
   }
 }
 
+/**
+ * A Bot API call that carries a file, which `call` above cannot do — it sends
+ * JSON, and Telegram takes uploads only as multipart.
+ *
+ * Written against the platform's own FormData and fetch rather than a client
+ * library: one method needs this, and a dependency that can upload files is a
+ * dependency that can be pointed anywhere.
+ */
+async function callWithFile<T>(method: string, form: FormData): Promise<T> {
+  if (!hasTelegram) {
+    throw new TelegramApiError(method, null, 'TELEGRAM_BOT_TOKEN is not configured');
+  }
+
+  const controller = new AbortController();
+  // Longer than the JSON timeout: this one is carrying a few hundred kilobytes
+  // over whatever connection the server happens to have.
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+
+  try {
+    const response = await fetch(`${API_ROOT}/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
+
+    const body = (await response.json()) as TelegramApiResult<T>;
+    if (!body.ok || body.result === undefined) {
+      throw new TelegramApiError(
+        method,
+        body.error_code ?? response.status,
+        body.description ?? 'Unknown Telegram API error',
+      );
+    }
+    return body.result;
+  } catch (error) {
+    if (error instanceof TelegramApiError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new TelegramApiError(method, null, 'Request to Telegram timed out');
+    }
+    throw new TelegramApiError(
+      method,
+      null,
+      error instanceof Error ? error.message : 'Network failure',
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Send an image into a chat, as a photo.
+ *
+ * A photo rather than a document on purpose: a photo opens with one tap and
+ * the Telegram viewer's own menu has "Save to Gallery" in it, which is the
+ * thing the user is actually trying to do. A document would stay lossless but
+ * lands as a file card, and saving it is a longer road.
+ *
+ * The caption is written by the caller from server-side data, never echoed
+ * from the client, so the words under the picture are the platform's record
+ * regardless of what image was handed in.
+ */
+export async function sendBotPhoto(options: {
+  chatId: string;
+  bytes: Buffer;
+  filename: string;
+  caption: string;
+  replyMarkup?: ReplyMarkup;
+}): Promise<{ message_id: number }> {
+  const form = new FormData();
+  form.append('chat_id', options.chatId);
+  form.append(
+    'photo',
+    new Blob([new Uint8Array(options.bytes)], { type: 'image/png' }),
+    options.filename,
+  );
+  form.append('caption', options.caption);
+  form.append('parse_mode', 'HTML');
+  if (options.replyMarkup) form.append('reply_markup', JSON.stringify(options.replyMarkup));
+
+  return callWithFile<{ message_id: number }>('sendPhoto', form);
+}
+
 export interface ChatMember {
   status: ChatMemberStatus;
   user: { id: number; username?: string; first_name: string };

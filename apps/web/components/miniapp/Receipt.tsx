@@ -9,6 +9,7 @@ import {
   type TransactionReceipt,
 } from '@fundxtra/shared';
 import { Button } from '@/components/ui';
+import { api, errorMessage } from '@/lib/api';
 import { haptic } from '@/lib/telegram';
 import {
   canShareImages,
@@ -250,6 +251,44 @@ export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
   const image = current?.blob ?? null;
   const imageFailed = current?.failed ?? false;
 
+  /*
+    Two ways out, and the order is deliberate.
+
+    Telegram's in-app browser cannot save a file — downloads are inert there,
+    and the share sheet is missing on some builds — so a Mini App has no
+    reliable way to hand anybody a copy of anything. The bot does: it posts the
+    receipt into the chat the user is already in, Telegram keeps it, and saving
+    it to the gallery is the viewer's own menu item. That is the primary
+    action, because it is the one that always works.
+
+    Sharing stays as the second button for the browsers that do support it,
+    where it is quicker and reaches other apps.
+  */
+  const [sending, setSending] = useState(false);
+
+  const sendToTelegram = useCallback(() => {
+    if (!image || sending) return;
+    setSending(true);
+    setNote(null);
+
+    const form = new FormData();
+    form.append('receipt', image, `fundxtra-receipt-${reference}.png`);
+
+    api
+      .upload<{ chat: string }>(`/wallet/transactions/${transaction.id}/send-to-telegram`, form)
+      .then((result) => {
+        haptic.success();
+        setNote(`Sent to your chat with ${result.chat}. Open it to save the image.`);
+      })
+      .catch((error: unknown) => {
+        haptic.error();
+        setNote(errorMessage(error));
+      })
+      .finally(() => {
+        setSending(false);
+      });
+  }, [image, sending, reference, transaction.id]);
+
   const share = useCallback(() => {
     if (!image) return;
     setNote(null);
@@ -262,15 +301,15 @@ export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
       if (route === 'cancelled') return;
       if (route === 'unavailable') {
         haptic.error();
-        setNote('Your browser blocked it. A screenshot works just as well.');
+        setNote('Your browser blocked that. Send it to your Telegram chat instead.');
         return;
       }
       haptic.success();
-      // Says what actually happened. The old version claimed a download every
-      // time, including inside Telegram, where no download ever started.
+      // Says what actually happened. An earlier version claimed a download
+      // every time, including inside Telegram, where none ever started.
       setNote(
         route === 'shared'
-          ? 'Shared. Choose “Save image” in the sheet to keep a copy.'
+          ? 'Shared.'
           : 'Opened in a new tab — long-press the image to save it.',
       );
     });
@@ -385,20 +424,27 @@ export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
       </div>
 
       <Button
-        variant="secondary"
         fullWidth
-        onClick={share}
-        loading={!image && !imageFailed}
+        onClick={sendToTelegram}
+        loading={sending || (!image && !imageFailed)}
         disabled={imageFailed}
       >
         {imageFailed
           ? 'Screenshot works just as well'
-          : !image
-            ? 'Preparing receipt'
-            : canShare
-              ? 'Share receipt'
-              : 'Open receipt image'}
+          : sending
+            ? 'Sending'
+            : !image
+              ? 'Preparing receipt'
+              : 'Send to my Telegram chat'}
       </Button>
+
+      {/* Only offered where it works. Telegram's own browser often has no
+          share sheet, and a button that does nothing is worse than no button. */}
+      {canShare && image && !imageFailed && (
+        <Button variant="ghost" fullWidth onClick={share}>
+          Share it somewhere else
+        </Button>
+      )}
 
       {note && (
         <p
