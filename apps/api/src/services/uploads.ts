@@ -85,15 +85,42 @@ export async function storeProof(input: {
   // Path is derived from the user, the task and the clock, never from client input.
   const path = `${PROOF_PREFIX}/${input.userId}/${hashedId(input.taskId, String(Date.now()))}.${extension}`;
 
-  const file = bucket().file(path);
-  await file.save(input.buffer, {
-    contentType: actualType,
-    resumable: false,
-    metadata: {
-      cacheControl: 'private, max-age=0, no-transform',
-      metadata: { userId: input.userId, taskId: input.taskId },
-    },
-  });
+  try {
+    await bucket()
+      .file(path)
+      .save(input.buffer, {
+        contentType: actualType,
+        resumable: false,
+        metadata: {
+          cacheControl: 'private, max-age=0, no-transform',
+          metadata: { userId: input.userId, taskId: input.taskId },
+        },
+      });
+  } catch (error) {
+    /*
+      A bucket that does not exist is a setup step, not a bug — Cloud Storage
+      has to be switched on in the Firebase console before any screenshot can
+      be stored. Left as a generic 500 it reads to the user as "the app is
+      broken" and tells the operator nothing, so it is named here the same way
+      a missing database index is.
+    */
+    const message = error instanceof Error ? error.message : String(error);
+    if (/bucket does not exist|not found|notfound|404/i.test(message)) {
+      logger.error(
+        { err: error, bucket: bucket().name },
+        'Screenshot upload failed: the storage bucket does not exist. Enable Cloud Storage in the Firebase console.',
+      );
+      throw new AppError(ERROR_CODES.VERIFICATION_UNAVAILABLE, {
+        message: 'Screenshot uploads are not switched on yet. Please tell Fundxtra Support.',
+        detail: 'Cloud Storage is not enabled for this project, or the bucket name is wrong.',
+      });
+    }
+    logger.error({ err: error, path }, 'Screenshot upload failed');
+    throw new AppError(ERROR_CODES.VERIFICATION_UNAVAILABLE, {
+      message: 'We could not save your screenshot just now. Please try again.',
+      detail: message,
+    });
+  }
 
   logger.info({ path, bytes: input.buffer.length, userId: input.userId }, 'Proof stored');
   return { path, contentType: actualType, bytes: input.buffer.length };

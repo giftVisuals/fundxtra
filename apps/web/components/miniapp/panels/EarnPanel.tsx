@@ -1,12 +1,8 @@
 'use client';
 
-import { AnimatePresence, motion } from 'framer-motion';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ACCEPTED_PROOF_MIME_TYPES,
-  LIMITS,
   TASK_CATEGORY_LABELS,
-  VERIFICATION_HINTS,
   VERIFICATION_LABELS,
   formatNaira,
   initials,
@@ -14,21 +10,17 @@ import {
   type TaskCategory,
   type TaskListItem,
 } from '@fundxtra/shared';
-import { api, ApiError, errorMessage, errorRequestId } from '@/lib/api';
 import { invalidateResources, useResource } from '@/lib/resource';
+import { TaskFlow } from '../TaskFlow';
 import { supportUrl } from '@/lib/config';
-import { haptic, openExternal } from '@/lib/telegram';
 import { useSession } from '@/lib/session';
 import {
   Badge,
   BudgetBar,
-  Button,
   Card,
   EmptyState,
   ErrorState,
-  Sheet,
   SkeletonList,
-  SuccessState,
 } from '@/components/ui';
 import { EarnIcon } from '@/components/glass';
 import { PanelHeader, Section } from './shared';
@@ -52,13 +44,6 @@ import { PanelHeader, Section } from './shared';
  *    which verifies and decides. The optimistic balance update only happens
  *    after the server confirms the credit.
  */
-
-type CompletionState =
-  | { kind: 'idle' }
-  | { kind: 'working' }
-  | { kind: 'credited'; rewardKobo: number; message: string }
-  | { kind: 'queued'; message: string }
-  | { kind: 'failed'; message: string; requestId?: string | undefined };
 
 export function EarnPanel() {
   const { refresh, applyBalance } = useSession();
@@ -123,6 +108,28 @@ export function EarnPanel() {
     [applyBalance, load, refresh],
   );
 
+  /*
+    Completing a task replaces the list rather than covering it. The task
+    requires leaving the app and coming back, which is the one thing a modal
+    handles worst — and its own steps need the whole screen.
+
+    Keyed by task id so opening a different task starts from a clean slate
+    instead of carrying the previous one's screenshot into it.
+  */
+  if (openTask) {
+    return (
+      <div>
+        <TaskFlow
+          key={openTask.id}
+          task={openTask}
+          supportUrl={supportUrl}
+          onClose={() => setOpenTask(null)}
+          onCompleted={handleCompleted}
+        />
+      </div>
+    );
+  }
+
   return (
     <div>
       <PanelHeader
@@ -178,16 +185,6 @@ export function EarnPanel() {
         </Section>
       )}
 
-      {/*
-        Keyed by task id so opening a different task remounts the sheet with
-        clean state, instead of resetting five fields inside an effect.
-      */}
-      <TaskSheet
-        key={openTask?.id ?? 'none'}
-        task={openTask}
-        onClose={() => setOpenTask(null)}
-        onCompleted={handleCompleted}
-      />
     </div>
   );
 }
@@ -383,477 +380,6 @@ function TaskStateBadge({ state }: { state: TaskListItem['userState'] }) {
  * fast user and a script look identical at this resolution and blocking the
  * wrong one is worse than flagging both.
  */
-function TaskSheet({
-  task,
-  onClose,
-  onCompleted,
-}: {
-  task: TaskListItem | null;
-  onClose: () => void;
-  onCompleted: (balanceAfterKobo?: number) => Promise<void>;
-}) {
-  const [state, setState] = useState<CompletionState>({ kind: 'idle' });
-  const [answer, setAnswer] = useState('');
-  const [proofFile, setProofFile] = useState<File | null>(null);
-  const [proofError, setProofError] = useState<string | null>(null);
-  const [opened, setOpened] = useState(false);
-  /*
-    Set when the sheet opens, in the effect below — not in this initialiser.
-    `Date.now()` during render makes the render impure, and a ref initialiser
-    runs during render.
-  */
-  const openedAt = useRef<number>(0);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  /*
-    Record when the sheet was opened, for the dwell signal sent with the
-    completion. State is NOT reset here — the parent gives this component a
-    `key` of the task id, so opening a different task remounts it with fresh
-    state. Resetting five pieces of state in an effect would cause a
-    cascading render on every open.
-  */
-  useEffect(() => {
-    openedAt.current = Date.now();
-  }, []);
-
-  const submit = useCallback(async () => {
-    if (!task) return;
-    setState({ kind: 'working' });
-    setProofError(null);
-
-    try {
-      let proofPath: string | undefined;
-
-      if (task.requiresProof) {
-        if (!proofFile) {
-          setProofError('Please attach your screenshot.');
-          setState({ kind: 'idle' });
-          return;
-        }
-        const formData = new FormData();
-        formData.append('proof', proofFile);
-        const uploaded = await api.upload<{ proofPath: string }>(
-          `/tasks/${task.id}/proof`,
-          formData,
-        );
-        proofPath = uploaded.proofPath;
-      }
-
-      const dwellSeconds = Math.round((Date.now() - openedAt.current) / 1000);
-      const result = await api.post<{
-        state: 'CREDITED' | 'PENDING_REVIEW';
-        rewardKobo: number;
-        balanceAfterKobo?: number;
-        message: string;
-      }>(`/tasks/${task.id}/complete`, {
-        ...(proofPath ? { proofPath } : {}),
-        ...(answer.trim() ? { answer: answer.trim() } : {}),
-        dwellSeconds,
-      });
-
-      if (result.state === 'CREDITED') {
-        haptic.success();
-        setState({ kind: 'credited', rewardKobo: result.rewardKobo, message: result.message });
-        await onCompleted(result.balanceAfterKobo);
-      } else {
-        haptic.light();
-        setState({ kind: 'queued', message: result.message });
-        await onCompleted();
-      }
-    } catch (caught) {
-      haptic.error();
-      if (caught instanceof ApiError && caught.fieldError('proof')) {
-        setProofError(caught.fieldError('proof') ?? null);
-        setState({ kind: 'idle' });
-        return;
-      }
-      setState({
-        kind: 'failed',
-        message: errorMessage(caught),
-        requestId: errorRequestId(caught),
-      });
-    }
-  }, [task, proofFile, answer, onCompleted]);
-
-  if (!task) return null;
-
-  return (
-    <Sheet
-      open={Boolean(task)}
-      onClose={onClose}
-      title={task.title}
-      dismissible={state.kind !== 'working'}
-      footer={
-        state.kind === 'credited' || state.kind === 'queued' ? (
-          <Button fullWidth size="lg" onClick={onClose}>
-            Done
-          </Button>
-        ) : task.userState === 'AVAILABLE' ? (
-          <div style={{ display: 'grid', gap: 8 }}>
-            {task.targetUrl && !opened && (
-              <Button
-                fullWidth
-                size="lg"
-                onClick={() => {
-                  setOpened(true);
-                  openExternal(task.targetUrl as string);
-                }}
-              >
-                {task.verification === 'TELEGRAM_MEMBERSHIP' ? 'Open and join' : 'Open task'}
-              </Button>
-            )}
-            <Button
-              fullWidth
-              size="lg"
-              variant={task.targetUrl && !opened ? 'secondary' : 'primary'}
-              loading={state.kind === 'working'}
-              disabled={state.kind === 'working'}
-              onClick={() => void submit()}
-            >
-              {task.verification === 'TELEGRAM_MEMBERSHIP'
-                ? 'Verify and claim'
-                : task.requiresProof
-                  ? 'Submit screenshot'
-                  : `Claim ${formatNaira(task.rewardKobo)}`}
-            </Button>
-          </div>
-        ) : null
-      }
-    >
-      <AnimatePresence mode="wait">
-        {state.kind === 'credited' && (
-          <motion.div key="credited" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <SuccessState
-              title={`${formatNaira(state.rewardKobo)} added`}
-              message={state.message}
-            />
-          </motion.div>
-        )}
-
-        {state.kind === 'queued' && (
-          <motion.div key="queued" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <SuccessState title="Submitted for review" message={state.message} />
-          </motion.div>
-        )}
-
-        {(state.kind === 'idle' || state.kind === 'working' || state.kind === 'failed') && (
-          <motion.div key="detail" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'baseline',
-                justifyContent: 'space-between',
-                gap: 12,
-                paddingBottom: 14,
-                marginBottom: 14,
-                borderBottom: `1px solid ${tokens.semantic.divider}`,
-              }}
-            >
-              <div>
-                <p
-                  style={{
-                    fontSize: tokens.typography.size['2xs'],
-                    letterSpacing: tokens.typography.tracking.wider,
-                    textTransform: 'uppercase',
-                    color: tokens.semantic.inkSubtle,
-                  }}
-                >
-                  Reward
-                </p>
-                <p
-                  className="fx-tabular"
-                  style={{
-                    fontFamily: tokens.typography.fontDisplay,
-                    fontSize: tokens.typography.size['2xl'],
-                    fontWeight: tokens.typography.weight.bold,
-                    color: tokens.semantic.brandInk,
-                  }}
-                >
-                  {formatNaira(task.rewardKobo)}
-                </p>
-              </div>
-              <Badge tone="neutral" mark="none">
-                {TASK_CATEGORY_LABELS[task.category]}
-              </Badge>
-            </div>
-
-            <p
-              style={{
-                fontSize: tokens.typography.size.base,
-                lineHeight: tokens.typography.leading.relaxed,
-                color: tokens.semantic.inkMuted,
-              }}
-            >
-              {task.description}
-            </p>
-
-            {/* How the reward is verified, stated before the user starts. */}
-            <Card tone="brand" padding={12} style={{ marginTop: 16 }}>
-              <p
-                style={{
-                  fontSize: tokens.typography.size.sm,
-                  lineHeight: tokens.typography.leading.relaxed,
-                  color: tokens.colors.cocoa[800],
-                }}
-              >
-                <strong>{VERIFICATION_LABELS[task.verification]}.</strong>{' '}
-                {VERIFICATION_HINTS[task.verification]}
-              </p>
-            </Card>
-
-            <h3
-              style={{
-                marginTop: 20,
-                marginBottom: 10,
-                fontSize: tokens.typography.size.sm,
-                fontWeight: tokens.typography.weight.semibold,
-                letterSpacing: tokens.typography.tracking.wider,
-                textTransform: 'uppercase',
-                color: tokens.semantic.inkSubtle,
-              }}
-            >
-              Steps
-            </h3>
-            <ol style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'grid', gap: 10 }}>
-              {task.instructions.map((instruction, index) => (
-                <li key={index} style={{ display: 'flex', gap: 10 }}>
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      flexShrink: 0,
-                      display: 'grid',
-                      placeItems: 'center',
-                      width: 22,
-                      height: 22,
-                      borderRadius: '50%',
-                      background: tokens.colors.cocoa[50],
-                      border: `1px solid ${tokens.colors.cocoa[200]}`,
-                      color: tokens.colors.cocoa[700],
-                      fontSize: tokens.typography.size['2xs'],
-                      fontWeight: tokens.typography.weight.bold,
-                    }}
-                  >
-                    {index + 1}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: tokens.typography.size.base,
-                      lineHeight: tokens.typography.leading.snug,
-                    }}
-                  >
-                    {instruction}
-                  </span>
-                </li>
-              ))}
-            </ol>
-
-            <div style={{ marginTop: 20 }}>
-              <h3
-                style={{
-                  marginBottom: 10,
-                  fontSize: tokens.typography.size.sm,
-                  fontWeight: tokens.typography.weight.semibold,
-                  letterSpacing: tokens.typography.tracking.wider,
-                  textTransform: 'uppercase',
-                  color: tokens.semantic.inkSubtle,
-                }}
-              >
-                Campaign
-              </h3>
-              <BudgetBar budget={task.budget} />
-            </div>
-
-            {/* Free-text answer for manual-review tasks. */}
-            {task.verification === 'MANUAL_REVIEW' && task.userState === 'AVAILABLE' && (
-              <div style={{ marginTop: 20 }}>
-                <label
-                  htmlFor="fx-task-answer"
-                  style={{
-                    display: 'block',
-                    marginBottom: 6,
-                    fontSize: tokens.typography.size.sm,
-                    fontWeight: tokens.typography.weight.medium,
-                  }}
-                >
-                  Your answer
-                </label>
-                <textarea
-                  id="fx-task-answer"
-                  value={answer}
-                  onChange={(event) => setAnswer(event.target.value)}
-                  rows={3}
-                  maxLength={600}
-                  placeholder="Paste your completion code or the details requested above"
-                  style={{
-                    width: '100%',
-                    padding: 12,
-                    fontSize: tokens.typography.size.base,
-                    background: tokens.semantic.bgSubtle,
-                    border: `1px solid ${tokens.semantic.border}`,
-                    borderRadius: tokens.radii.md,
-                    resize: 'vertical',
-                  }}
-                />
-              </div>
-            )}
-
-            {/* Screenshot upload for proof tasks. */}
-            {task.requiresProof && task.userState === 'AVAILABLE' && (
-              <div style={{ marginTop: 20 }}>
-                <p
-                  style={{
-                    marginBottom: 8,
-                    fontSize: tokens.typography.size.sm,
-                    fontWeight: tokens.typography.weight.medium,
-                  }}
-                >
-                  Your screenshot
-                </p>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept={ACCEPTED_PROOF_MIME_TYPES.join(',')}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0] ?? null;
-                    setProofError(null);
-                    if (file && file.size > LIMITS.MAX_PROOF_BYTES) {
-                      setProofError(
-                        `That file is too large. Please keep it under ${Math.floor(
-                          LIMITS.MAX_PROOF_BYTES / 1024 / 1024,
-                        )}MB.`,
-                      );
-                      setProofFile(null);
-                      return;
-                    }
-                    setProofFile(file);
-                  }}
-                  style={{ display: 'none' }}
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 12,
-                    width: '100%',
-                    minHeight: 60,
-                    padding: 12,
-                    background: proofFile ? tokens.colors.success.soft : tokens.semantic.bgSubtle,
-                    border: `1.5px dashed ${
-                      proofError
-                        ? tokens.colors.danger.base
-                        : proofFile
-                          ? '#cfe7d7'
-                          : tokens.semantic.borderStrong
-                    }`,
-                    borderRadius: tokens.radii.md,
-                    textAlign: 'left',
-                  }}
-                >
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      display: 'grid',
-                      placeItems: 'center',
-                      width: 34,
-                      height: 34,
-                      borderRadius: tokens.radii.sm,
-                      background: '#fff',
-                      border: `1px solid ${tokens.semantic.border}`,
-                      color: proofFile ? tokens.colors.success.strong : tokens.semantic.brand,
-                    }}
-                  >
-                    {proofFile ? (
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M3 8.5 6 11.5 13 4.5" />
-                      </svg>
-                    ) : (
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M8 11V3.5M5 6.5 8 3.5l3 3M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" />
-                      </svg>
-                    )}
-                  </span>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span
-                      style={{
-                        display: 'block',
-                        fontSize: tokens.typography.size.sm,
-                        fontWeight: tokens.typography.weight.medium,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {proofFile ? proofFile.name : 'Choose a screenshot'}
-                    </span>
-                    <span
-                      style={{
-                        display: 'block',
-                        marginTop: 2,
-                        fontSize: tokens.typography.size.xs,
-                        color: tokens.semantic.inkMuted,
-                      }}
-                    >
-                      {proofFile
-                        ? `${(proofFile.size / 1024 / 1024).toFixed(1)}MB · tap to change`
-                        : 'PNG, JPEG or WebP'}
-                    </span>
-                  </span>
-                </button>
-                {proofError && (
-                  <p
-                    role="alert"
-                    style={{
-                      marginTop: 8,
-                      fontSize: tokens.typography.size.xs,
-                      color: tokens.colors.danger.strong,
-                    }}
-                  >
-                    {proofError}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/*
-              Static advice rather than a live countdown. A countdown would
-              need `Date.now()` during render, and the server treats a fast
-              completion as a signal to flag for review, not a hard block —
-              so an accurate ticking number would imply a gate that does not
-              exist.
-            */}
-            {task.minimumDwellSeconds > 0 && task.userState === 'AVAILABLE' && (
-              <p
-                style={{
-                  marginTop: 16,
-                  fontSize: tokens.typography.size.xs,
-                  color: tokens.semantic.inkSubtle,
-                }}
-              >
-                Take your time — completing this properly takes at least{' '}
-                {task.minimumDwellSeconds} seconds.
-              </p>
-            )}
-
-            {state.kind === 'failed' && (
-              <div style={{ marginTop: 18 }}>
-                <ErrorState
-                  title="Could not complete that"
-                  message={state.message}
-                  requestId={state.requestId}
-                  onRetry={() => setState({ kind: 'idle' })}
-                  supportUrl={supportUrl}
-                />
-              </div>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </Sheet>
-  );
-}
-
 /**
  * Category glyph, used where a campaign has no sponsor logo. Drawn inline so
  * it inherits the tile's cocoa colour and adds no request.
