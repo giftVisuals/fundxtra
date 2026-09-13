@@ -54,7 +54,7 @@ import { listSecurityEvents } from '../services/security';
 import { getSettings, updateSettings } from '../services/settings';
 import { recomputeStats } from '../services/stats';
 import { createTask, listAllTasks, requireTask, setTaskStatus, updateTask } from '../services/tasks';
-import { signedProofUrl } from '../services/uploads';
+import { fetchProof, signedProofUrl } from '../services/uploads';
 import { buildOwnerBrief, formatOwnerBrief } from '../services/briefing';
 import { clearFlag, requireUser } from '../services/users';
 import { listWithdrawals, transitionWithdrawal } from '../services/withdrawals';
@@ -721,6 +721,43 @@ adminRouter.post('/maintenance/brief', requirePermission('settings:manage'), asy
     next(error);
   }
 });
+
+/**
+ * Serve a submission's screenshot through the API.
+ *
+ * The reviewer's browser used to load the image straight from the host, which
+ * failed silently on any network that could not reach it — and a broken image
+ * tells a reviewer nothing about whether the upload failed, the link is wrong,
+ * or their own connection is at fault. Now the server fetches it, so the only
+ * connection that has to work is the one the admin console is already using.
+ *
+ * It also keeps the public image URL out of the browser entirely, which is
+ * worth having for a page full of other people's screenshots.
+ *
+ * Never cached by anything in between: these are private images, and a proxy
+ * holding on to one is exactly what the expiry on the upload is meant to
+ * prevent.
+ */
+adminRouter.get(
+  '/submissions/:submissionId/proof',
+  requirePermission('submissions:review'),
+  async (req, res, next) => {
+    try {
+      const submission = await findSubmission(pathParam(req, 'submissionId'));
+      if (!submission?.proofPath) throw notFound('that screenshot');
+
+      const proof = await fetchProof(submission.proofPath);
+      if (!proof) throw notFound('that screenshot');
+
+      res.setHeader('content-type', proof.contentType);
+      res.setHeader('cache-control', 'private, no-store');
+      res.setHeader('content-length', String(proof.bytes.byteLength));
+      res.send(proof.bytes);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Announcements

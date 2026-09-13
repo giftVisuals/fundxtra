@@ -12,6 +12,7 @@ import {
   type TaskSubmission,
 } from '@fundxtra/shared';
 import { api, ApiError, errorMessage } from '@/lib/api';
+import { ProofImage } from './ProofImage';
 import { AdminButton, AdminCard, AdminField, Pill, adminInputStyle } from './primitives';
 
 interface SubmissionWithProof extends TaskSubmission {
@@ -188,27 +189,10 @@ export function SubmissionsView() {
                 reviewer approves something they did not actually check. */}
             <div>
               {submission.proofUrl ? (
-                <a
-                  href={submission.proofUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title="Open the full-size screenshot"
-                  style={{ display: 'block' }}
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={submission.proofUrl}
-                    alt={`Proof submitted for ${submission.taskTitle}`}
-                    style={{
-                      width: '100%',
-                      maxHeight: 420,
-                      objectFit: 'contain',
-                      background: tokens.colors.sand[100],
-                      border: `1px solid ${tokens.semantic.border}`,
-                      borderRadius: tokens.radii.xs,
-                    }}
-                  />
-                </a>
+                <ProofImage
+                  submissionId={submission.id}
+                  alt={`Proof submitted for ${submission.taskTitle}`}
+                />
               ) : submission.answer ? (
                 <div
                   style={{

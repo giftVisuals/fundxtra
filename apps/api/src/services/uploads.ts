@@ -267,6 +267,55 @@ export function proofUrl(path: string): string | null {
 }
 
 /**
+ * Fetch a stored proof, so the API can serve it rather than the browser
+ * fetching it from imgbb directly.
+ *
+ * Two reasons, and the second is why this exists at all.
+ *
+ * The public one: a reviewer's browser had to reach i.ibb.co, and when it
+ * could not — a network that blocks image hosts, an in-app browser, a phone on
+ * a restricted connection — the admin saw a broken image and nothing else. A
+ * broken image tells a reviewer nothing about whether the upload failed, the
+ * link is wrong, or their own connection is at fault. Serving it from the API
+ * removes the question: if the server can reach imgbb, the reviewer sees it.
+ *
+ * The quieter one: the imgbb URL is public to anyone holding it. Proxying
+ * means it stops being handed to the browser at all, so it cannot be copied
+ * out of a page, shared, or left in someone's history.
+ */
+export async function fetchProof(
+  path: string,
+): Promise<{ bytes: Buffer; contentType: string } | null> {
+  const url = proofUrl(path);
+  if (!url) return null;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      logger.warn({ status: response.status }, 'Could not fetch a stored proof');
+      return null;
+    }
+
+    const contentType = response.headers.get('content-type') ?? 'image/png';
+    // Only ever hand back an image, whatever the host claims to have sent.
+    if (!contentType.startsWith('image/')) {
+      logger.warn({ contentType }, 'Stored proof was not an image');
+      return null;
+    }
+
+    return { bytes: Buffer.from(await response.arrayBuffer()), contentType };
+  } catch (error) {
+    logger.warn({ err: error }, 'Could not reach the image host for a proof');
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
  * Kept as the shape the admin routes already await.
  *
  * Nothing is signed any more, but the callers are async and turning them

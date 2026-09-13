@@ -16,7 +16,7 @@ process.env.FIREBASE_CLIENT_EMAIL = 'test@fundxtra.iam.gserviceaccount.com';
 process.env.FIREBASE_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----';
 process.env.IMGBB_API_KEY = 'imgbb-test-key-abcdef';
 
-const { storeProof, proofUrl, detectImageType } = await import('../src/services/uploads');
+const { storeProof, proofUrl, fetchProof, detectImageType } = await import('../src/services/uploads');
 
 /** A real PNG header, which is what the signature check reads. */
 function png(): Buffer {
@@ -185,5 +185,71 @@ describe('the magic-byte check itself', () => {
       ),
     ).toBe('image/webp');
     expect(detectImageType(Buffer.from('GIF89a-and-more-bytes'))).toBeNull();
+  });
+});
+
+/**
+ * Serving a proof through the API.
+ *
+ * A reviewer's browser used to fetch the image from the host directly, and on
+ * any network that could not reach it they saw a broken image and nothing
+ * else — no way to tell a failed upload from a bad link from their own
+ * connection. The server fetches it now, so the only connection that has to
+ * work is the one the console is already using.
+ */
+describe('fetching a stored proof', () => {
+  it('returns the bytes and the type', async () => {
+    const image = png();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/png' }),
+        arrayBuffer: async () => image.buffer.slice(image.byteOffset, image.byteOffset + image.byteLength),
+      })),
+    );
+
+    const proof = await fetchProof('https://i.ibb.co/abc/a.png');
+    expect(proof?.contentType).toBe('image/png');
+    expect(proof?.bytes.byteLength).toBe(image.byteLength);
+  });
+
+  it('will not fetch a URL on another host', async () => {
+    const spy = vi.fn();
+    vi.stubGlobal('fetch', spy);
+
+    expect(await fetchProof('https://evil.example.com/a.png')).toBeNull();
+    // The point: no request was made at all.
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('refuses anything the host serves that is not an image', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'text/html' }),
+        arrayBuffer: async () => new ArrayBuffer(8),
+      })),
+    );
+
+    expect(await fetchProof('https://i.ibb.co/abc/a.png')).toBeNull();
+  });
+
+  it('reports a missing image rather than throwing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 404, headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(0) })),
+    );
+
+    expect(await fetchProof('https://i.ibb.co/abc/gone.png')).toBeNull();
+  });
+
+  it('survives the host being unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ENOTFOUND'); }));
+
+    expect(await fetchProof('https://i.ibb.co/abc/a.png')).toBeNull();
   });
 });
