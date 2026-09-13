@@ -79,6 +79,17 @@ export interface Task {
   telegramChatLabel: string | null;
   /** Set when the bot lacks the access needed to verify. Admin-facing. */
   verificationWarning: string | null;
+  /**
+   * What a screenshot must show for this task to be approved, in plain words.
+   *
+   * Written by the admin when the campaign is created, and read by the
+   * automatic reviewer. It is the difference between asking "does this look
+   * real?" — a vague question that gets vague judgement — and "does this show
+   * the @crediplexhq profile with Following active?", which has an answer.
+   * Empty means the reviewer falls back to the task's own title and
+   * instructions, and is correspondingly less certain.
+   */
+  reviewCriteria: string | null;
 
   sponsor: TaskSponsor | null;
   startsAt: IsoDate | null;

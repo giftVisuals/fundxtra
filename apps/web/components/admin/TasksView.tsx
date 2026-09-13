@@ -309,6 +309,7 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
   const [budget, setBudget] = useState('');
   const [targetUrl, setTargetUrl] = useState('');
   const [chatId, setChatId] = useState('');
+  const [reviewCriteria, setReviewCriteria] = useState('');
   const [sponsorName, setSponsorName] = useState('');
   const [dwell, setDwell] = useState('8');
   const [busy, setBusy] = useState(false);
@@ -343,6 +344,7 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
         status: 'DRAFT',
         ...(slug.trim() ? { slug: slug.trim().toLowerCase() } : {}),
         ...(targetUrl.trim() ? { targetUrl: targetUrl.trim() } : {}),
+        ...(reviewCriteria.trim() ? { reviewCriteria: reviewCriteria.trim() } : {}),
         ...(chatId.trim() ? { telegramChatId: chatId.trim() } : {}),
         ...(sponsorName.trim() ? { sponsorName: sponsorName.trim() } : {}),
       });
@@ -355,7 +357,7 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
     }
   }, [
     title, slug, description, instructions, category, verification, rewardKobo, budgetKobo,
-    dwell, targetUrl, chatId, sponsorName, onCreated,
+    dwell, targetUrl, chatId, reviewCriteria, sponsorName, onCreated,
   ]);
 
   // Shown live, so the admin sees the link their id produces before saving.
@@ -531,6 +533,24 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
               style={adminInputStyle}
             />
           </AdminField>
+
+          {verification === 'SCREENSHOT' && (
+            <AdminField
+              label="What must the screenshot show?"
+              hint={
+                fieldErrors.reviewCriteria ??
+                'Read by the automatic reviewer before a person sees it. Be specific — a vague checklist gets a vague decision, and anything it is unsure about comes to your Telegram instead.'
+              }
+            >
+              <textarea
+                value={reviewCriteria}
+                onChange={(event) => setReviewCriteria(event.target.value)}
+                rows={2}
+                placeholder="The @crediplexhq profile on X, with the Follow button showing Following."
+                style={{ ...adminInputStyle, minHeight: 56, padding: 10, resize: 'vertical' }}
+              />
+            </AdminField>
+          )}
 
           {verification === 'TELEGRAM_MEMBERSHIP' && (
             <AdminField
@@ -794,6 +814,21 @@ function EditTaskForm({ task, onDone }: { task: Task; onDone: (message: string) 
             />
           </AdminField>
         </div>
+
+        <AdminField
+          label="What must the screenshot show?"
+          hint={
+            fieldErrors.reviewCriteria ??
+            'The automatic reviewer judges against this. Vague in, vague out.'
+          }
+        >
+          <textarea
+            defaultValue={task.reviewCriteria ?? ''}
+            onChange={(event) => set('reviewCriteria', event.target.value || null)}
+            rows={2}
+            style={{ ...adminInputStyle, minHeight: 56, padding: 10, resize: 'vertical' }}
+          />
+        </AdminField>
 
         <AdminField
           label="Where the task sends people"

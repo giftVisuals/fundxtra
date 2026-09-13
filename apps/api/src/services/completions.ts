@@ -17,6 +17,8 @@ import { checkChatMembership } from '../lib/telegram-bot';
 import { idempotencyKey, postEntryIn } from './ledger';
 import { recordSecurityEvent } from './security';
 import { getSettings } from './settings';
+import { reviewScreenshot, reviewerConfigured } from './screenshot-review';
+import { escalateForReview } from './review-escalation';
 import { bumpStats } from './stats';
 import { notifyTaskApproved, notifyTaskRejected } from './notify';
 import { flagUser } from './users';
@@ -349,6 +351,19 @@ async function submitForReview(
 
   logger.info({ submissionId, taskId: task.id, userId: user.id }, 'Task submission queued');
 
+  /*
+    Reviewed now, not later, and on bytes we already have — so a review costs
+    no database reads at all. Deliberately not awaited: the user has done their
+    part and should not sit watching a spinner while a model thinks. If the
+    review approves, the money and the message arrive moments later, which from
+    their side is simply fast.
+  */
+  if (input.proofPath) {
+    void autoReview({ submissionId, task, proofPath: input.proofPath }).catch((error: unknown) => {
+      logger.warn({ err: error, submissionId }, 'Automatic review failed; left for a person');
+    });
+  }
+
   return {
     state: 'PENDING_REVIEW',
     rewardKobo: result.rewardKobo,
@@ -356,6 +371,55 @@ async function submitForReview(
     remainingBudgetKobo: result.remainingAfterKobo,
     message: 'Submitted. A reviewer will check it, usually within 24 hours.',
   };
+}
+
+/**
+ * Judge a fresh submission and act on the verdict.
+ *
+ * Every path that is not a confident decision ends with the submission sitting
+ * exactly where it was — pending, in the queue, waiting for a person. That is
+ * the property worth protecting: this can fail in any way it likes, including
+ * not being configured at all, and the platform still works the way it did
+ * before it existed.
+ */
+/**
+ * The reviewer's identity in the audit trail.
+ *
+ * A real id rather than a null, so every automatic decision is attributable in
+ * the audit log and in `reviewedBy` — "who approved this?" must always have an
+ * answer, and "the machine" is a legitimate one.
+ */
+const AUTO_REVIEWER_ID = 'auto-reviewer';
+
+async function autoReview(options: {
+  submissionId: string;
+  task: Task;
+  proofPath: string;
+}): Promise<void> {
+  if (!reviewerConfigured()) return;
+
+  const settings = await getSettings();
+  if (!settings.tasks.autoReviewEnabled) return;
+
+  const review = await reviewScreenshot({ task: options.task, proofPath: options.proofPath });
+
+  if (review.verdict === 'APPROVE' || review.verdict === 'REJECT') {
+    await reviewSubmission({
+      submissionId: options.submissionId,
+      decision: review.verdict === 'APPROVE' ? 'APPROVE' : 'REJECT',
+      reviewerId: AUTO_REVIEWER_ID,
+      reason: review.reason || 'The screenshot did not show the task was completed.',
+    });
+    logger.info(
+      { submissionId: options.submissionId, verdict: review.verdict, confidence: review.confidence },
+      'Submission decided automatically',
+    );
+    return;
+  }
+
+  const submission = await findSubmission(options.submissionId);
+  if (!submission) return;
+  await escalateForReview({ submission, task: options.task, review });
 }
 
 export interface ReviewOutcome {

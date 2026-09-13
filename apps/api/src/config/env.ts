@@ -76,6 +76,25 @@ const envSchema = z.object({
    */
   IMGBB_EXPIRATION_SECONDS: z.coerce.number().int().min(60).max(15_552_000).default(15_552_000),
 
+  /**
+   * Groq, which reads submitted screenshots and decides whether they show what
+   * the task asked for.
+   *
+   * Without it nothing changes: every submission waits for a person, exactly
+   * as before. The review is an accelerator, never a dependency.
+   */
+  GROQ_API_KEY: z.string().min(8).optional(),
+  /**
+   * Which vision model to use.
+   *
+   * A variable rather than a constant because hosted models get retired —
+   * Groq deprecated two of its vision models during 2026 alone. Switching one
+   * should be a dashboard edit, not a deploy.
+   */
+  GROQ_VISION_MODEL: z.string().min(3).default('qwen/qwen3.6-27b'),
+  /** Where the API lives. Overridable so a proxy or a mock can stand in. */
+  GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),
+
   /** Which reward provider to use: none | mock | nasfampay. */
   REWARD_PROVIDER: z.enum(['none', 'mock', 'nasfampay']).default('none'),
   /**

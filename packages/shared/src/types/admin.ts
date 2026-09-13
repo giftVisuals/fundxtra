@@ -185,6 +185,14 @@ export interface SystemSettings {
     maxRewardKobo: Kobo;
     /** Global pause switch for all task earning. */
     earningEnabled: boolean;
+    /**
+     * Whether screenshots are read automatically before a person sees them.
+     *
+     * Off puts every submission back in the human queue, exactly as it worked
+     * before. A setting rather than only an environment variable, so it can be
+     * switched off in seconds if the reviewer starts making bad calls.
+     */
+    autoReviewEnabled: boolean;
   };
   platform: {
     /** Blocks all non-admin traffic with a friendly notice. */

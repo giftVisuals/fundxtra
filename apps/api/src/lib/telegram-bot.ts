@@ -170,6 +170,54 @@ export async function sendBotPhoto(options: {
   return callWithFile<{ message_id: number }>('sendPhoto', form);
 }
 
+/**
+ * Answer a tapped inline button.
+ *
+ * Telegram shows a loading spinner on the button until this is called, so it
+ * is not optional politeness — without it the admin's app looks stuck.
+ */
+export async function answerCallbackQuery(
+  callbackQueryId: string,
+  text?: string,
+): Promise<boolean> {
+  try {
+    await call('answerCallbackQuery', {
+      callback_query_id: callbackQueryId,
+      ...(text ? { text, show_alert: false } : {}),
+    });
+    return true;
+  } catch (error) {
+    logger.warn({ err: error }, 'Could not answer the callback query');
+    return false;
+  }
+}
+
+/**
+ * Replace the caption under a photo, and take its buttons away.
+ *
+ * Used the moment a decision is made, so the same submission cannot be
+ * approved twice by tapping an old message.
+ */
+export async function editPhotoCaption(options: {
+  chatId: string;
+  messageId: number;
+  caption: string;
+}): Promise<boolean> {
+  try {
+    await call('editMessageCaption', {
+      chat_id: options.chatId,
+      message_id: options.messageId,
+      caption: options.caption,
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [] },
+    });
+    return true;
+  } catch (error) {
+    logger.warn({ err: error }, 'Could not update the review message');
+    return false;
+  }
+}
+
 export interface ChatMember {
   status: ChatMemberStatus;
   user: { id: number; username?: string; first_name: string };
@@ -342,6 +390,8 @@ export async function notifyUser(telegramId: string, text: string): Promise<bool
  * ------------------------------------------------------------------------- */
 
 export interface InlineKeyboardButton {
+  /** Sends this string back to the webhook when tapped, with no chat message. */
+  callback_data?: string;
   text: string;
   web_app?: { url: string };
   url?: string;
@@ -437,16 +487,17 @@ export async function getWebhookInfo(): Promise<WebhookInfo | null> {
  * URL would accept forged updates from anyone who guessed it — and an update
  * is what triggers a referral attribution.
  *
- * `allowed_updates` is narrowed to messages: nothing else is handled, and
- * asking for less means Telegram does not queue updates that would only be
- * discarded.
+ * `allowed_updates` covers messages and button taps, which are the two things
+ * handled. Asking for less means Telegram does not queue updates that would
+ * only be discarded — and callback_query has to be named explicitly, or the
+ * Approve and Reject buttons on an escalated screenshot are never delivered.
  */
 export async function setWebhook(url: string, secretToken: string): Promise<boolean> {
   try {
     await call('setWebhook', {
       url,
       secret_token: secretToken,
-      allowed_updates: ['message'],
+      allowed_updates: ['message', 'callback_query'],
       drop_pending_updates: false,
       max_connections: 20,
     });

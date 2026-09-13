@@ -52,7 +52,13 @@ export function defaultSettings(): SystemSettings {
       activeProvider: env.REWARD_PROVIDER,
     },
     referrals: { enabled: true, rewardKobo: LIMITS.REFERRAL_REWARD_KOBO },
-    tasks: { maxRewardKobo: LIMITS.MAX_TASK_REWARD_KOBO, earningEnabled: true },
+    tasks: {
+      maxRewardKobo: LIMITS.MAX_TASK_REWARD_KOBO,
+      earningEnabled: true,
+      // On by default, but dormant without GROQ_API_KEY — so nothing changes
+      // for an installation that has not configured a reviewer.
+      autoReviewEnabled: true,
+    },
     platform: {
       maintenanceMode: false,
       maintenanceMessage: 'Fundxtra is being updated. Please check back shortly.',

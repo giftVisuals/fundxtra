@@ -45,6 +45,29 @@ vi.mock('../src/lib/telegram-bot', () => ({
   setMyCommands: async () => true,
   setChatMenuButton: async () => true,
   setWebhook: async () => true,
+  answerCallbackQuery: async (id: string, text?: string) => {
+    answered.push({ id, text });
+    return true;
+  },
+  editPhotoCaption: async (options: { caption: string }) => {
+    captions.push(options.caption);
+    return true;
+  },
+  sendBotPhoto: async () => ({ message_id: 1 }),
+}));
+
+/** Button taps the bot answered, and the captions it rewrote afterwards. */
+const answered: { id: string; text?: string }[] = [];
+const captions: string[] = [];
+
+/** Decisions the review service was asked to apply. */
+const decided: { submissionId: string; decision: string; reviewerId: string }[] = [];
+
+vi.mock('../src/services/completions', () => ({
+  reviewSubmission: async (input: { submissionId: string; decision: string; reviewerId: string }) => {
+    decided.push(input);
+    return { status: 'APPROVED', rewardKobo: 4_000, transactionId: 't1', telegramId: '1', taskTitle: 'Follow Crediplex on X', reason: '', balanceAfterKobo: 4_000 };
+  },
 }));
 
 const { createApp } = await import('../src/app');
@@ -220,5 +243,78 @@ describe('updates the bot must not answer', () => {
     });
 
     expect(sent).toHaveLength(0);
+  });
+});
+
+/**
+ * Approving a screenshot by tapping a button in Telegram.
+ *
+ * This is how the owner clears the uncertain pile without opening a page that
+ * loads hundreds of rows: the work arrives in their chat and a decision costs
+ * one tap. Which makes it a button that moves money, so who may press it is
+ * the part worth testing.
+ */
+describe('review buttons in Telegram', () => {
+  function tap(data: string, fromId: number) {
+    return {
+      update_id: Math.floor(Math.random() * 1_000_000),
+      callback_query: {
+        id: `cb-${String(Math.random())}`,
+        from: { id: fromId, is_bot: false },
+        data,
+        message: { message_id: 55, chat: { id: fromId } },
+      },
+    };
+  }
+
+  beforeEach(() => {
+    answered.length = 0;
+    captions.length = 0;
+    decided.length = 0;
+  });
+
+  it('approves when the owner taps approve', async () => {
+    const response = await request(app)
+      .post('/telegram/webhook')
+      .set('x-telegram-bot-api-secret-token', SECRET)
+      .send(tap('rev:a:sub-1', 6_438_544_386));
+
+    expect(response.status).toBe(200);
+    expect(decided).toEqual([
+      { submissionId: 'sub-1', decision: 'APPROVE', reviewerId: '6438544386', reason: undefined },
+    ]);
+    // The buttons are taken away, so the same one cannot be tapped twice.
+    expect(captions[0]).toContain('Approved');
+  });
+
+  it('rejects when the owner taps reject', async () => {
+    await request(app)
+      .post('/telegram/webhook')
+      .set('x-telegram-bot-api-secret-token', SECRET)
+      .send(tap('rev:r:sub-2', 6_438_544_386));
+
+    expect(decided[0]?.decision).toBe('REJECT');
+    expect(captions[0]).toContain('nothing was deducted');
+  });
+
+  it('refuses anyone who is not the owner', async () => {
+    await request(app)
+      .post('/telegram/webhook')
+      .set('x-telegram-bot-api-secret-token', SECRET)
+      .send(tap('rev:a:sub-3', 999_111_222));
+
+    // The callback arrives over the authenticated webhook, but the id inside
+    // it decides nothing on its own: this button pays people.
+    expect(decided).toHaveLength(0);
+    expect(answered[0]?.text).toContain('not yours');
+  });
+
+  it('ignores callback data that is not a review decision', async () => {
+    await request(app)
+      .post('/telegram/webhook')
+      .set('x-telegram-bot-api-secret-token', SECRET)
+      .send(tap('something:else:entirely', 6_438_544_386));
+
+    expect(decided).toHaveLength(0);
   });
 });

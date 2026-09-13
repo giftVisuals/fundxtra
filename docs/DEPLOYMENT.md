@@ -121,6 +121,7 @@ TELEGRAM_BOT_USERNAME=fundxtrabot
 FIREBASE_SERVICE_ACCOUNT=  # the whole service-account JSON, one paste
 FIREBASE_PROJECT_ID=fundxtra
 IMGBB_API_KEY=           # from https://api.imgbb.com/ → Get API key
+GROQ_API_KEY=            # optional: automatic screenshot review
 REWARD_PROVIDER=none
 PRIMARY_ADMIN_TELEGRAM_ID=6438544386
 PUBLIC_WEB_URL=https://fundxtra.vercel.app

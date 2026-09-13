@@ -148,6 +148,8 @@ export const createTaskSchema = z
       .nullish(),
     telegramChatId: trimmed(80).nullish(),
     telegramChatLabel: trimmed(80).nullish(),
+    /** Plain-words checklist the automatic reviewer judges a screenshot against. */
+    reviewCriteria: trimmed(800).nullish(),
     sponsorName: trimmed(80).nullish(),
     sponsorLogoUrl: z.string().trim().url().max(600).nullish(),
     startsAt: z.string().datetime().nullish(),
@@ -180,6 +182,7 @@ export const updateTaskSchema = z.object({
   /** Changing this is refused while submissions are waiting on the old rule. */
   verification: verificationMethodSchema.optional(),
   perUserLimit: z.number().int().min(1).max(10).optional(),
+  reviewCriteria: trimmed(800).nullish(),
   // Normalised the same way as on create, so editing accepts a bare Telegram
   // name too rather than demanding a full address only here.
   targetUrl: z
@@ -374,6 +377,7 @@ export const systemSettingsUpdateSchema = z.object({
     .object({
       maxRewardKobo: koboSchema.max(LIMITS.MAX_TASK_REWARD_KOBO).optional(),
       earningEnabled: z.boolean().optional(),
+      autoReviewEnabled: z.boolean().optional(),
     })
     .optional(),
   platform: z

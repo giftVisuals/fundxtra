@@ -1,8 +1,14 @@
 import { BRAND, formatNaira, isTaskSlug, LIMITS, toSignupSource } from '@fundxtra/shared';
 import { getSettings } from './settings';
-import { sendBotMessage, type ReplyMarkup } from '../lib/telegram-bot';
+import {
+  answerCallbackQuery,
+  editPhotoCaption,
+  sendBotMessage,
+  type ReplyMarkup,
+} from '../lib/telegram-bot';
 import { logger } from '../lib/logger';
-import { miniAppUrl } from '../config/env';
+import { env, miniAppUrl } from '../config/env';
+import { reviewSubmission } from './completions';
 
 /**
  * The bot conversation.
@@ -35,9 +41,17 @@ export interface TelegramMessage {
   text?: string;
 }
 
+export interface TelegramCallbackQuery {
+  id: string;
+  from?: { id?: number; is_bot?: boolean };
+  data?: string;
+  message?: { message_id?: number; chat?: { id?: number } };
+}
+
 export interface TelegramUpdate {
   update_id?: number;
   message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 }
 
 function openButton(label: string, url: string): ReplyMarkup {
@@ -110,6 +124,11 @@ function helpMessage(supportHandle: string, minWithdrawal: string): string {
  * update, and a redelivered `/start` would send a duplicate greeting.
  */
 export async function handleBotUpdate(update: TelegramUpdate): Promise<void> {
+  if (update.callback_query) {
+    await handleReviewTap(update.callback_query);
+    return;
+  }
+
   const message = update.message;
   if (!message?.text || !message.chat || !message.from) return;
 
@@ -189,5 +208,65 @@ export async function handleBotUpdate(update: TelegramUpdate): Promise<void> {
     );
   } catch (error) {
     logger.warn({ err: error, chatId }, 'Could not handle the bot update');
+  }
+}
+
+/**
+ * A tapped Approve or Reject button on an escalated screenshot.
+ *
+ * This is the whole point of escalating to Telegram: deciding costs one tap
+ * and reads exactly one document — the submission being decided. No queue is
+ * loaded, because there is no queue here. The work came to the owner.
+ *
+ * Authorised by Telegram id against the primary admin, and nothing else. The
+ * callback arrives over the same authenticated webhook as every other update,
+ * and the id in it is Telegram's own — but this is a button that moves money,
+ * so it is checked rather than assumed.
+ */
+async function handleReviewTap(query: TelegramCallbackQuery): Promise<void> {
+  const data = query.data ?? '';
+  const [prefix, action, submissionId] = data.split(':');
+  if (prefix !== 'rev' || !submissionId || (action !== 'a' && action !== 'r')) return;
+
+  const tapperId = query.from?.id === undefined ? '' : String(query.from.id);
+  if (tapperId !== env.PRIMARY_ADMIN_TELEGRAM_ID) {
+    await answerCallbackQuery(query.id, 'That is not yours to decide.');
+    logger.warn({ tapperId, submissionId }, 'Non-owner tapped a review button');
+    return;
+  }
+
+  const approve = action === 'a';
+
+  try {
+    const outcome = await reviewSubmission({
+      submissionId,
+      decision: approve ? 'APPROVE' : 'REJECT',
+      reviewerId: tapperId,
+      reason: approve ? undefined : 'Reviewed by the Fundxtra team.',
+    });
+
+    await answerCallbackQuery(query.id, approve ? 'Approved and paid' : 'Rejected');
+
+    /*
+      The caption is rewritten and the buttons removed, so the same submission
+      cannot be decided twice by scrolling back to an old message. The service
+      would refuse the second attempt anyway, but a button that still looks
+      live is a button somebody presses.
+    */
+    const chatId = query.message?.chat?.id;
+    const messageId = query.message?.message_id;
+    if (chatId !== undefined && messageId !== undefined) {
+      await editPhotoCaption({
+        chatId: String(chatId),
+        messageId,
+        caption: approve
+          ? `✅ <b>Approved</b> — ${formatNaira(outcome.rewardKobo)} paid to the user.`
+          : '❌ <b>Rejected</b> — nothing was deducted, and the user has been told.',
+      });
+    }
+  } catch (error) {
+    logger.warn({ err: error, submissionId }, 'Review tap could not be applied');
+    // Most likely somebody already decided it in the admin console.
+    await answerCallbackQuery(query.id, 'Already decided, or no longer available.');
   }
 }
