@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  nairaInWords,
   addKobo, assertPositiveKobo, formatCount, formatNaira, isKobo, koboToNaira,
   MoneyError, multiplyKobo, nairaToKobo, parseNairaInput, percentageOf, subtractKobo,
 } from './money';
@@ -117,5 +118,42 @@ describe('misc helpers', () => {
   it('formatCount groups and compacts', () => {
     expect(formatCount(1234)).toBe('1,234');
     expect(formatCount(125_000, true)).toBe('125K');
+  });
+});
+
+describe('nairaInWords', () => {
+  /*
+    A receipt prints the figure and the words. They come from the same integer
+    so they cannot disagree — a cheque where the two differ is a dispute, and
+    the same is true of a payout receipt.
+  */
+  it('spells whole naira amounts', () => {
+    expect(nairaInWords(30_000)).toBe('Three hundred naira');
+    expect(nairaInWords(250_000)).toBe('Two thousand five hundred naira');
+    expect(nairaInWords(100)).toBe('One naira');
+    expect(nairaInWords(0)).toBe('Zero naira');
+  });
+
+  it('uses "and" the way a receipt does, inside the hundreds only', () => {
+    expect(nairaInWords(123_400)).toBe('One thousand two hundred and thirty-four naira');
+    expect(nairaInWords(4_070_000)).toBe('Forty thousand seven hundred naira');
+  });
+
+  it('names the kobo only when there are any', () => {
+    expect(nairaInWords(123_456)).toBe(
+      'One thousand two hundred and thirty-four naira and fifty-six kobo',
+    );
+    // A whole amount must not read "... and zero kobo".
+    expect(nairaInWords(200)).not.toContain('kobo');
+  });
+
+  it('handles the platform ceiling without losing a scale', () => {
+    expect(nairaInWords(100_000_000)).toBe('One million naira');
+    expect(nairaInWords(2_120_000)).toBe('Twenty-one thousand two hundred naira');
+  });
+
+  it('reads a debit as its size, not its sign', () => {
+    // The direction is shown by the receipt, not spelled into the words.
+    expect(nairaInWords(-250_000)).toBe('Two thousand five hundred naira');
   });
 });

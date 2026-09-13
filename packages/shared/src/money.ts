@@ -188,3 +188,57 @@ export function percentageOf(part: number, total: number): number {
   if (!Number.isFinite(part) || !Number.isFinite(total) || total <= 0) return 0;
   return Math.min(100, Math.max(0, (part / total) * 100));
 }
+
+/**
+ * The amount spelled out, the way a printed receipt states it.
+ *
+ * A figure and its words disagreeing is how a cheque gets disputed, so both
+ * come from the same integer rather than from two formatting paths. Kobo are
+ * included only when they are non-zero: "two thousand five hundred naira"
+ * reads better than "... and zero kobo", and a receipt should not add noise.
+ */
+export function nairaInWords(kobo: Kobo): string {
+  const ONES = [
+    'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+    'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen',
+    'nineteen',
+  ];
+  const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+
+  function under100(value: number): string {
+    if (value < 20) return ONES[value] ?? '';
+    const ten = TENS[Math.floor(value / 10)] ?? '';
+    const unit = value % 10;
+    return unit ? `${ten}-${ONES[unit] ?? ''}` : ten;
+  }
+
+  function under1000(value: number): string {
+    if (value < 100) return under100(value);
+    const hundreds = `${ONES[Math.floor(value / 100)] ?? ''} hundred`;
+    const rest = value % 100;
+    return rest ? `${hundreds} and ${under100(rest)}` : hundreds;
+  }
+
+  function spell(value: number): string {
+    if (value === 0) return 'zero';
+    const parts: string[] = [];
+    const billions = Math.floor(value / 1_000_000_000);
+    const millions = Math.floor((value % 1_000_000_000) / 1_000_000);
+    const thousands = Math.floor((value % 1_000_000) / 1_000);
+    const rest = value % 1_000;
+    if (billions) parts.push(`${under1000(billions)} billion`);
+    if (millions) parts.push(`${under1000(millions)} million`);
+    if (thousands) parts.push(`${under1000(thousands)} thousand`);
+    if (rest) parts.push(under1000(rest));
+    return parts.join(' ');
+  }
+
+  const absolute = Math.abs(assertKobo(kobo, 'amount in words'));
+  const naira = Math.floor(absolute / KOBO_PER_NAIRA);
+  const remainder = absolute % KOBO_PER_NAIRA;
+
+  const nairaPart = `${spell(naira)} naira`;
+  const full = remainder ? `${nairaPart} and ${spell(remainder)} kobo` : nairaPart;
+
+  return full.charAt(0).toUpperCase() + full.slice(1);
+}

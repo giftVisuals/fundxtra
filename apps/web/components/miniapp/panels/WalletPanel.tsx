@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   NETWORKS,
-  NIGERIAN_BANKS,
   REWARD_KIND_LABELS,
   TRANSACTION_LABELS,
   WITHDRAWAL_STATUS_LABELS,
@@ -17,12 +16,13 @@ import {
   type Network,
   type RewardKind,
   type RewardProduct,
+  type TransactionReceipt,
   type TransactionRow,
   type Withdrawal,
 } from '@fundxtra/shared';
-import { api, ApiError, errorMessage, errorRequestId } from '@/lib/api';
+import { api, errorMessage, errorRequestId } from '@/lib/api';
 import { supportUrl } from '@/lib/config';
-import { haptic, openExternal } from '@/lib/telegram';
+import { haptic } from '@/lib/telegram';
 import { useSession } from '@/lib/session';
 import {
   Badge,
@@ -37,6 +37,8 @@ import {
   SuccessState,
 } from '@/components/ui';
 import { GiftIcon, WalletIcon } from '@/components/glass';
+import { Receipt } from '../Receipt';
+import { WithdrawFlow } from '../WithdrawFlow';
 import { PanelHeader, Row, Section, IconTile } from './shared';
 
 interface WalletPayload {
@@ -82,6 +84,14 @@ export function WalletPanel() {
     One sheet at a time is also the better interaction.
   */
   const [redeeming, setRedeeming] = useState<RewardProduct | null>(null);
+  /*
+    Withdrawing and reading a receipt take over the panel rather than opening a
+    sheet. A sheet is right for a short confirmation; it is wrong for a
+    multi-step form, where the keyboard covers most of the sheet and every step
+    has to be scrolled to. These are full views with their own back button.
+  */
+  const [view, setView] = useState<'wallet' | 'withdraw'>('wallet');
+  const [receiptFor, setReceiptFor] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -133,6 +143,23 @@ export function WalletPanel() {
     (withdrawal) => withdrawal.status === 'PENDING' || withdrawal.status === 'PROCESSING',
   );
 
+  if (view === 'withdraw') {
+    return (
+      <WithdrawFlow
+        balanceKobo={wallet.balanceKobo}
+        minAmountKobo={wallet.withdrawals.minAmountKobo}
+        maxAmountKobo={wallet.withdrawals.maxAmountKobo}
+        feeKobo={wallet.withdrawals.feeKobo}
+        onClose={() => setView('wallet')}
+        onCompleted={() => afterMoneyMoved()}
+      />
+    );
+  }
+
+  if (receiptFor) {
+    return <ReceiptView transactionId={receiptFor} onClose={() => setReceiptFor(null)} />;
+  }
+
   return (
     <div>
       <PanelHeader title="Wallet" subtitle="One balance for everything you earn." />
@@ -152,7 +179,7 @@ export function WalletPanel() {
           <Button
             style={{ flex: 1 }}
             disabled={!wallet.withdrawals.open}
-            onClick={() => setSheet('withdraw')}
+            onClick={() => setView('withdraw')}
           >
             Withdraw cash
           </Button>
@@ -217,22 +244,15 @@ export function WalletPanel() {
           />
         ) : (
           transactions.map((transaction) => (
-            <TransactionRowItem key={transaction.id} transaction={transaction} />
+            <TransactionRowItem
+              key={transaction.id}
+              transaction={transaction}
+              onOpen={() => setReceiptFor(transaction.id)}
+            />
           ))
         )}
       </Section>
 
-      {/*
-        Keyed on whether the sheet is open, so each opening starts from a
-        clean form rather than resetting state inside an effect.
-      */}
-      <WithdrawSheet
-        key={sheet === 'withdraw' ? 'withdraw-open' : 'withdraw-closed'}
-        open={sheet === 'withdraw'}
-        onClose={() => setSheet(null)}
-        wallet={wallet}
-        onDone={afterMoneyMoved}
-      />
       <RewardsSheet
         open={sheet === 'rewards'}
         onClose={() => setSheet(null)}
@@ -257,7 +277,14 @@ export function WalletPanel() {
   );
 }
 
-function TransactionRowItem({ transaction }: { transaction: TransactionRow }) {
+function TransactionRowItem({
+  transaction,
+  onOpen,
+}: {
+  transaction: TransactionRow;
+  /** Opens the receipt for this entry. Every row has one. */
+  onOpen: () => void;
+}) {
   const credit = transaction.direction === 'CREDIT';
   const failed = transaction.status === 'FAILED' || transaction.status === 'REVERSED';
 
@@ -279,6 +306,7 @@ function TransactionRowItem({ transaction }: { transaction: TransactionRow }) {
           </svg>
         </IconTile>
       }
+      onClick={onOpen}
       title={transaction.description || TRANSACTION_LABELS[transaction.type]}
       subtitle={`${TRANSACTION_LABELS[transaction.type]} · ${relativeTime(transaction.createdAt)}`}
       trailing={
@@ -319,246 +347,6 @@ function TransactionRowItem({ transaction }: { transaction: TransactionRow }) {
   );
 }
 
-/**
- * Cash withdrawal.
- *
- * Deliberately a short, explicit form: amount, bank, account number, account
- * name, PIN. There is no account-name lookup because no payout provider has
- * been selected yet, and inventing one would mean either guessing an API or
- * silently accepting a name nobody verified. The user enters it and the form
- * says plainly that it must match.
- */
-function WithdrawSheet({
-  open,
-  onClose,
-  wallet,
-  onDone,
-}: {
-  open: boolean;
-  onClose: () => void;
-  wallet: WalletPayload;
-  onDone: (balanceAfterKobo?: number) => Promise<void>;
-}) {
-  const [amount, setAmount] = useState('');
-  const [bankCode, setBankCode] = useState('');
-  const [accountNumber, setAccountNumber] = useState('');
-  const [accountName, setAccountName] = useState('');
-  const [pin, setPin] = useState('');
-  const [step, setStep] = useState<'form' | 'pin' | 'done'>('form');
-  const [submitting, setSubmitting] = useState(false);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [failure, setFailure] = useState<{ message: string; requestId?: string } | null>(null);
-
-
-  const amountKobo = useMemo(() => parseNairaInput(amount), [amount]);
-  const netKobo = amountKobo === null ? null : amountKobo - wallet.withdrawals.feeKobo;
-
-  const formValid =
-    amountKobo !== null &&
-    amountKobo >= wallet.withdrawals.minAmountKobo &&
-    amountKobo <= Math.min(wallet.withdrawals.maxAmountKobo, wallet.balanceKobo) &&
-    bankCode.length > 0 &&
-    /^\d{10}$/.test(accountNumber) &&
-    accountName.trim().length >= 3;
-
-  const submit = useCallback(async () => {
-    if (amountKobo === null) return;
-    setSubmitting(true);
-    setFieldErrors({});
-    setFailure(null);
-    try {
-      await api.post('/wallet/withdrawals', {
-        amountKobo,
-        bankCode,
-        accountNumber,
-        accountName: accountName.trim(),
-        pin,
-      });
-      haptic.success();
-      setStep('done');
-      await onDone();
-    } catch (caught) {
-      haptic.error();
-      if (caught instanceof ApiError && caught.fields) {
-        setFieldErrors(caught.fields);
-        setStep('form');
-      }
-      setFailure({
-        message: errorMessage(caught),
-        ...(errorRequestId(caught) ? { requestId: errorRequestId(caught) } : {}),
-      });
-      setPin('');
-    } finally {
-      setSubmitting(false);
-    }
-  }, [amountKobo, bankCode, accountNumber, accountName, pin, onDone]);
-
-  return (
-    <Sheet
-      open={open}
-      onClose={onClose}
-      title="Withdraw cash"
-      dismissible={!submitting}
-      footer={
-        step === 'done' ? (
-          <Button fullWidth size="lg" onClick={onClose}>
-            Done
-          </Button>
-        ) : step === 'form' ? (
-          <Button fullWidth size="lg" disabled={!formValid} onClick={() => setStep('pin')}>
-            Continue
-          </Button>
-        ) : (
-          <Button
-            fullWidth
-            size="lg"
-            loading={submitting}
-            disabled={pin.length !== 4 || submitting}
-            onClick={() => void submit()}
-          >
-            {amountKobo !== null ? `Send ${formatNaira(amountKobo)}` : 'Confirm'}
-          </Button>
-        )
-      }
-    >
-      {step === 'done' && (
-        <SuccessState
-          title="Withdrawal requested"
-          message={`${formatNaira(
-            amountKobo ?? 0,
-          )} is on its way to ${accountName}. We will update the status in your wallet.`}
-        />
-      )}
-
-      {step === 'pin' && (
-        <div>
-          <Card padding={14} tone="brand" style={{ marginBottom: 24 }}>
-            <div style={{ display: 'grid', gap: 6, fontSize: tokens.typography.size.sm }}>
-              <SummaryLine label="Amount" value={formatNaira(amountKobo ?? 0)} />
-              {wallet.withdrawals.feeKobo > 0 && (
-                <>
-                  <SummaryLine label="Fee" value={formatNaira(wallet.withdrawals.feeKobo)} />
-                  <SummaryLine label="You receive" value={formatNaira(netKobo ?? 0)} strong />
-                </>
-              )}
-              <SummaryLine
-                label="To"
-                value={`${accountName} · ${maskAccountNumber(accountNumber)}`}
-              />
-              <SummaryLine
-                label="Bank"
-                value={NIGERIAN_BANKS.find((bank) => bank.code === bankCode)?.name ?? ''}
-              />
-            </div>
-          </Card>
-
-          <PinInput
-            value={pin}
-            onChange={setPin}
-            label="Enter your PIN to approve"
-            error={failure?.message}
-            disabled={submitting}
-            autoFocus
-          />
-
-          <button
-            type="button"
-            onClick={() => setStep('form')}
-            style={{
-              display: 'block',
-              margin: '20px auto 0',
-              background: 'none',
-              border: 'none',
-              fontSize: tokens.typography.size.sm,
-              color: tokens.semantic.inkMuted,
-              textDecoration: 'underline',
-              textUnderlineOffset: 3,
-            }}
-          >
-            Change the details
-          </button>
-        </div>
-      )}
-
-      {step === 'form' && (
-        <div style={{ display: 'grid', gap: 16 }}>
-          <Field
-            label="Amount"
-            hint={`${formatNaira(wallet.withdrawals.minAmountKobo)} minimum · ${formatNaira(
-              wallet.balanceKobo,
-            )} available`}
-            error={
-              fieldErrors.amountKobo ??
-              (amount.length > 0 && amountKobo === null
-                ? 'Enter a valid amount'
-                : amountKobo !== null && amountKobo > wallet.balanceKobo
-                  ? 'That is more than your balance'
-                  : amountKobo !== null && amountKobo < wallet.withdrawals.minAmountKobo
-                    ? `The minimum is ${formatNaira(wallet.withdrawals.minAmountKobo)}`
-                    : undefined)
-            }
-          >
-            <input
-              inputMode="decimal"
-              value={amount}
-              onChange={(event) => setAmount(event.target.value)}
-              placeholder="0"
-              style={inputStyle}
-            />
-          </Field>
-
-          <Field label="Bank" error={fieldErrors.bankCode}>
-            <select
-              value={bankCode}
-              onChange={(event) => setBankCode(event.target.value)}
-              style={inputStyle}
-            >
-              <option value="">Select your bank</option>
-              {NIGERIAN_BANKS.map((bank) => (
-                <option key={bank.code} value={bank.code}>
-                  {bank.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Account number" error={fieldErrors.accountNumber}>
-            <input
-              inputMode="numeric"
-              maxLength={10}
-              value={accountNumber}
-              onChange={(event) => setAccountNumber(event.target.value.replace(/\D/g, ''))}
-              placeholder="10 digits"
-              style={inputStyle}
-            />
-          </Field>
-
-          <Field
-            label="Account name"
-            hint="Must match the name on the account exactly"
-            error={fieldErrors.accountName}
-          >
-            <input
-              value={accountName}
-              onChange={(event) => setAccountName(event.target.value)}
-              placeholder="As it appears at your bank"
-              autoComplete="name"
-              style={inputStyle}
-            />
-          </Field>
-
-          {failure && (
-            <ErrorState
-              message={failure.message}
-              requestId={failure.requestId}
-              supportUrl={supportUrl}
-            />
-          )}
-        </div>
-      )}
-    </Sheet>
-  );
-}
 
 /**
  * Reward redemption.
@@ -1047,3 +835,68 @@ const inputStyle: React.CSSProperties = {
   borderRadius: tokens.radii.md,
   appearance: 'none',
 };
+
+/**
+ * A receipt, as its own screen.
+ *
+ * Fetched by id rather than assembled from the row that was tapped: the row
+ * carries what the list needs, the receipt needs the withdrawal behind it, and
+ * one of the two has to be authoritative.
+ */
+function ReceiptView({
+  transactionId,
+  onClose,
+}: {
+  transactionId: string;
+  onClose: () => void;
+}) {
+  const [receipt, setReceipt] = useState<TransactionReceipt | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      setReceipt(await api.get<TransactionReceipt>(`/wallet/transactions/${transactionId}`));
+    } catch (caught) {
+      setError(errorMessage(caught));
+    }
+  }, [transactionId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Back to wallet"
+          style={{
+            display: 'grid',
+            placeItems: 'center',
+            width: 34,
+            height: 34,
+            flex: 'none',
+            background: tokens.semantic.bgSubtle,
+            color: tokens.semantic.brandInk,
+            border: `1px solid ${tokens.semantic.border}`,
+            borderRadius: tokens.radii.pill,
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
+        </button>
+        <h1 style={{ flex: 1, fontSize: tokens.typography.size.lg }}>Receipt</h1>
+      </div>
+
+      {error ? (
+        <ErrorState message={error} onRetry={() => void load()} supportUrl={supportUrl} />
+      ) : receipt ? (
+        <Receipt receipt={receipt} />
+      ) : (
+        <SkeletonList count={1} lines={6} />
+      )}
+    </div>
+  );
+}
