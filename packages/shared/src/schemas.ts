@@ -336,6 +336,7 @@ export const systemSettingsUpdateSchema = z.object({
       minAmountKobo: koboSchema.optional(),
       maxAmountKobo: koboSchema.optional(),
       dailyLimitKobo: koboSchema.optional(),
+      platformDailyPayoutKobo: koboSchema.optional(),
       feeKobo: z.number().int().min(0).max(MAX_KOBO).optional(),
       requireManualApproval: z.boolean().optional(),
     })

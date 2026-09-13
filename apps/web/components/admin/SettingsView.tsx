@@ -195,6 +195,17 @@ export function SettingsView() {
             {nairaField('withdrawals', 'feeKobo', 'Fee per withdrawal')}
           </div>
 
+          {/* Separated from the per-user limits above on purpose: this one is
+              not a working limit, it is the stop button for the whole platform. */}
+          <div style={{ marginTop: 4 }}>
+            {nairaField(
+              'withdrawals',
+              'platformDailyPayoutKobo',
+              'Whole-platform payout ceiling per day',
+              `Nothing more can be marked paid once the whole platform has paid this much in a day. A safety stop, not a target — currently ${formatNaira(value('withdrawals', 'platformDailyPayoutKobo') as number)}. Only a super admin can change it.`,
+            )}
+          </div>
+
           <div
             style={{
               display: 'grid',

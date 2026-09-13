@@ -28,6 +28,9 @@ function freshSettings() {
       minAmountKobo: 30_000,
       maxAmountKobo: 20_000_000,
       dailyLimitKobo: 20_000_000,
+      // The production default is far lower; the fixture is generous so the
+      // ceiling only takes part in the tests that set it deliberately.
+      platformDailyPayoutKobo: 100_000_000,
       feeKobo: 0,
       requireManualApproval: true,
     },
@@ -506,5 +509,108 @@ describe('provider abstraction', () => {
     const second = await provider.fulfil(request);
     expect(second).toEqual(first);
     expect(second.providerReference).toBe(first.providerReference);
+  });
+});
+
+/**
+ * The whole-platform payout ceiling.
+ *
+ * The per-user daily limit protects the float from one account. Once payouts
+ * are delegated to somebody else, the case that matters is different: many
+ * payouts in one day, from a mistake or an account in the wrong hands. This is
+ * the stop button for that, and only a super admin can move it.
+ */
+describe('the platform payout ceiling', () => {
+  async function pendingWithdrawal(userId: string, amountKobo: number) {
+    seedUser(userId, amountKobo * 2);
+    return requestWithdrawal({
+      user: user(userId), amountKobo,
+      bankCode: GTB, accountNumber: '0123456789', accountName: 'Gift Update',
+    });
+  }
+
+  it('refuses to mark a payout paid once the day is spent', async () => {
+    settings.withdrawals.platformDailyPayoutKobo = 150_000;
+
+    const first = await pendingWithdrawal('900', 100_000);
+    const second = await pendingWithdrawal('901', 100_000);
+
+    await transitionWithdrawal({
+      withdrawalId: first.id, status: 'COMPLETED', actorAdminId: 'admin-1',
+      providerReference: 'BANK-1',
+    });
+
+    // 100,000 already out, and 100,000 more would pass 150,000.
+    await expect(
+      transitionWithdrawal({
+        withdrawalId: second.id, status: 'COMPLETED', actorAdminId: 'admin-1',
+        providerReference: 'BANK-2',
+      }),
+    ).rejects.toThrow(/ceiling/i);
+
+    // Refused means untouched: the user's money is still pending, not lost.
+    const snapshot = store.snapshot();
+    expect(snapshot[`withdrawals/${second.id}`]?.status).toBe('PENDING');
+    expect(snapshot['users/901']?.pendingOutKobo).toBe(100_000);
+  });
+
+  it('still lets a payout through when there is room', async () => {
+    settings.withdrawals.platformDailyPayoutKobo = 500_000;
+
+    const first = await pendingWithdrawal('902', 100_000);
+    const second = await pendingWithdrawal('903', 100_000);
+
+    await transitionWithdrawal({
+      withdrawalId: first.id, status: 'COMPLETED', actorAdminId: 'admin-1', providerReference: 'B1',
+    });
+    const paid = await transitionWithdrawal({
+      withdrawalId: second.id, status: 'COMPLETED', actorAdminId: 'admin-1', providerReference: 'B2',
+    });
+
+    expect(paid.status).toBe('COMPLETED');
+  });
+
+  it('does not count refused payouts against the ceiling', async () => {
+    settings.withdrawals.platformDailyPayoutKobo = 150_000;
+
+    const rejected = await pendingWithdrawal('904', 100_000);
+    const real = await pendingWithdrawal('905', 100_000);
+
+    // Rejected money went back to the user, so it never left the platform and
+    // must not consume the day's ceiling.
+    await transitionWithdrawal({
+      withdrawalId: rejected.id, status: 'REJECTED', actorAdminId: 'admin-1',
+      reason: 'Wrong account name',
+    });
+
+    const paid = await transitionWithdrawal({
+      withdrawalId: real.id, status: 'COMPLETED', actorAdminId: 'admin-1', providerReference: 'B3',
+    });
+    expect(paid.status).toBe('COMPLETED');
+  });
+
+  it('never blocks returning money to a user', async () => {
+    settings.withdrawals.platformDailyPayoutKobo = 1;
+
+    const withdrawal = await pendingWithdrawal('906', 100_000);
+
+    // The ceiling is on money leaving. Giving it back must always be possible,
+    // or a user's balance could be held hostage by a limit they cannot see.
+    const returned = await transitionWithdrawal({
+      withdrawalId: withdrawal.id, status: 'REJECTED', actorAdminId: 'admin-1',
+      reason: 'Could not verify the account',
+    });
+    expect(returned.status).toBe('REJECTED');
+    expect(store.snapshot()['users/906']?.balanceKobo).toBe(200_000);
+  });
+
+  it('is off when set to zero, for anyone who wants no ceiling', async () => {
+    settings.withdrawals.platformDailyPayoutKobo = 0;
+
+    const withdrawal = await pendingWithdrawal('907', 100_000);
+    const paid = await transitionWithdrawal({
+      withdrawalId: withdrawal.id, status: 'COMPLETED', actorAdminId: 'admin-1', providerReference: 'B4',
+    });
+    expect(paid.status).toBe('COMPLETED');
   });
 });

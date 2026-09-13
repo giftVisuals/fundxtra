@@ -187,6 +187,12 @@ export async function transitionWithdrawal(input: {
   const firestore = db();
   const ref = firestore.collection(COLLECTIONS.withdrawals).doc(input.withdrawalId);
 
+  // Checked before the transaction opens, because it needs a query across the
+  // day's payouts and a refusal must stop the write from happening at all.
+  if (input.status === 'COMPLETED') {
+    await assertPlatformCeiling(input.withdrawalId);
+  }
+
   const { withdrawal, shouldReverse } = await firestore.runTransaction(async (tx) => {
     const snapshot = await tx.get(ref);
     if (!snapshot.exists) throw notFound('that withdrawal');
@@ -310,6 +316,80 @@ export async function cancelWithdrawal(userId: string, withdrawalId: string): Pr
  * someone withdraw past it, which is worse than an error. One user reaching the
  * cap of lifetime withdrawal requests is not a case that arises in practice.
  */
+/**
+ * Stop the platform paying out more than its daily ceiling.
+ *
+ * The per-user daily limit protects the float from one account. This protects
+ * it from everything else: a mistake, a campaign priced wrong, or an admin
+ * account in the wrong hands. It is a circuit breaker, not a working limit —
+ * if it ever fires, something is wrong and a person should look before money
+ * moves again.
+ *
+ * Deliberately placed on COMPLETED rather than on the request: a request only
+ * moves money inside Fundxtra, while marking one paid is the point at which
+ * real cash has left a real bank account. Blocking requests instead would tell
+ * a user "the platform is at its limit", which is both confusing and none of
+ * their business.
+ *
+ * Only a super admin can raise the ceiling — `settings:manage` is super-admin
+ * only — so the person doing the payouts cannot lift their own limit. That is
+ * the whole point of it.
+ *
+ * The read happens outside the transaction, so two admins marking payouts paid
+ * in the same instant could together cross the ceiling by one payout. That is
+ * accepted: this is a backstop measured in hundreds of thousands of naira, not
+ * an accounting control, and the ledger remains exact either way.
+ */
+async function assertPlatformCeiling(withdrawalId: string): Promise<void> {
+  const settings = await getSettings();
+  const ceiling = settings.withdrawals.platformDailyPayoutKobo;
+  if (!ceiling || ceiling <= 0) return;
+
+  const paidToday = await sumPaidTodayAcrossPlatform();
+  const snapshot = await db().collection(COLLECTIONS.withdrawals).doc(withdrawalId).get();
+  const amountKobo = (snapshot.get('amountKobo') as number | undefined) ?? 0;
+
+  if (paidToday + amountKobo > ceiling) {
+    logger.error(
+      { withdrawalId, paidToday, amountKobo, ceiling },
+      'Platform daily payout ceiling reached; refusing to mark this withdrawal paid',
+    );
+    throw new AppError(ERROR_CODES.LIMIT_EXCEEDED, {
+      message:
+        `Today's platform payout ceiling of ${formatNaira(ceiling)} has been reached. ` +
+        'Nothing has been paid. A super admin can raise it in Settings, or this can wait until tomorrow.',
+      detail: `paid ${String(paidToday)} + ${String(amountKobo)} exceeds ${String(ceiling)}`,
+    });
+  }
+}
+
+/** Everything marked paid today, across every user. */
+async function sumPaidTodayAcrossPlatform(): Promise<Kobo> {
+  const since = Timestamp.fromDate(startOfPlatformDay());
+  const collection = db().collection(COLLECTIONS.withdrawals);
+
+  const { docs, truncated } = await runFilteredQuery({
+    narrow: collection.where('status', '==', 'COMPLETED').where('reviewedAt', '>=', since),
+    base: collection.where('status', '==', 'COMPLETED'),
+    matches: (doc) => millisOf(doc.get('reviewedAt')) >= since.toMillis(),
+    label: 'withdrawals.sumPaidTodayAcrossPlatform',
+    // Larger than the per-user cap: this one counts the whole platform.
+    cap: 2_000,
+  });
+
+  if (truncated) {
+    // Fail closed. A ceiling that under-counts is a ceiling that does nothing,
+    // and the failure here is "an admin waits", not "money is lost".
+    throw new AppError(ERROR_CODES.DATABASE_SETUP_REQUIRED, {
+      message: "We could not measure today's payouts. Please try again shortly.",
+    });
+  }
+
+  let total = 0;
+  for (const doc of docs) total += (doc.get('amountKobo') as number | undefined) ?? 0;
+  return total;
+}
+
 async function sumWithdrawnToday(userId: string): Promise<Kobo> {
   const since = Timestamp.fromDate(startOfPlatformDay());
   const collection = db().collection(COLLECTIONS.withdrawals);

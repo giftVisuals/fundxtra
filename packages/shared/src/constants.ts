@@ -30,6 +30,17 @@ export const LIMITS = {
   MAX_CASH_WITHDRAWAL_KOBO: nairaToKobo(200_000) as Kobo,
   /** Default rolling 24h withdrawal ceiling per user. */
   DAILY_WITHDRAWAL_LIMIT_KOBO: nairaToKobo(200_000) as Kobo,
+  /**
+   * A circuit breaker on the whole platform, not one user.
+   *
+   * The limit above is per person, which protects against one account
+   * draining the float. It does nothing about the case that matters once
+   * payouts are delegated: many payouts in one day, whether from a mistake, a
+   * compromised admin account, or a campaign that was priced wrong. This is a
+   * ceiling on everything that can be marked paid in a single day, and only a
+   * super admin can raise it.
+   */
+  PLATFORM_DAILY_PAYOUT_CEILING_KOBO: nairaToKobo(500_000) as Kobo,
   /** Default minimum airtime redemption. */
   MIN_AIRTIME_KOBO: nairaToKobo(100) as Kobo,
   /** Default minimum data redemption. */

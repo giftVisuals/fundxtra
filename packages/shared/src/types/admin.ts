@@ -155,6 +155,13 @@ export interface SystemSettings {
     minAmountKobo: Kobo;
     maxAmountKobo: Kobo;
     dailyLimitKobo: Kobo;
+    /**
+     * Ceiling on everything the platform can pay out in one day, across all
+     * users. A circuit breaker rather than a working limit: it exists so a
+     * mistake or a compromised admin cannot empty the float before anyone
+     * notices. Only a super admin can change it.
+     */
+    platformDailyPayoutKobo: Kobo;
     feeKobo: Kobo;
     /** Payouts require an admin decision before reaching a provider. */
     requireManualApproval: boolean;

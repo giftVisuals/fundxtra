@@ -55,12 +55,14 @@ import { getSettings, updateSettings } from '../services/settings';
 import { recomputeStats } from '../services/stats';
 import { createTask, listAllTasks, requireTask, setTaskStatus, updateTask } from '../services/tasks';
 import { signedProofUrl } from '../services/uploads';
+import { buildOwnerBrief, formatOwnerBrief } from '../services/briefing';
 import { clearFlag, requireUser } from '../services/users';
 import { listWithdrawals, transitionWithdrawal } from '../services/withdrawals';
 import { auditUserBalance } from '../services/ledger';
 import { provider } from '../providers';
 import { NasfamPayProvider } from '../providers/nasfampay';
 import { env } from '../config/env';
+import { sendBotMessage } from '../lib/telegram-bot';
 
 /**
  * Admin routes.
@@ -694,6 +696,27 @@ adminRouter.post('/stats/recompute', requirePermission('settings:manage'), async
 adminRouter.post('/maintenance/indexes', requirePermission('settings:manage'), async (_req, res, next) => {
   try {
     ok(res, { indexes: await ensureIndexes() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Send the owner's daily brief right now.
+ *
+ * The brief arrives on its own each morning. This exists so it can be checked
+ * without waiting until tomorrow — after changing the bot token, say, or to
+ * confirm the numbers look right before trusting them for a week.
+ *
+ * Super-admin only, because the brief states the platform's float and what it
+ * owes: that is the owner's business, not the business of whoever is reviewing
+ * screenshots today.
+ */
+adminRouter.post('/maintenance/brief', requirePermission('settings:manage'), async (_req, res, next) => {
+  try {
+    const brief = await buildOwnerBrief();
+    const delivered = await sendBotMessage(env.PRIMARY_ADMIN_TELEGRAM_ID, formatOwnerBrief(brief));
+    ok(res, { delivered, brief });
   } catch (error) {
     next(error);
   }

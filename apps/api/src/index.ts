@@ -1,6 +1,7 @@
 import { createApp } from './app';
 import { configureBot } from './lib/bot-setup';
 import { ensureIndexes } from './lib/firestore-admin';
+import { startScheduler, stopScheduler } from './lib/scheduler';
 import { env, readiness } from './config/env';
 import { logger } from './lib/logger';
 
@@ -42,6 +43,11 @@ function main(): void {
       void ensureIndexes().catch((error: unknown) => {
         logger.error({ err: error }, 'Index provisioning failed');
       });
+
+      // The owner's daily brief and the stale-work alert. Only started when
+      // the service is configured: with no database there is nothing to
+      // report, and nothing to record having reported it in.
+      startScheduler();
     }
   });
 
@@ -49,6 +55,7 @@ function main(): void {
   // deploy cannot interrupt a transaction mid-commit.
   const shutdown = (signal: string) => {
     logger.info({ signal }, 'Shutting down');
+    stopScheduler();
     server.close((error) => {
       if (error) {
         logger.error({ err: error }, 'Error during shutdown');

@@ -76,6 +76,12 @@ export const REQUIRED_INDEXES: readonly RequiredIndex[] = [
     fields: [{ fieldPath: 'status', order: 'ASCENDING' }, { fieldPath: 'requestedAt', order: 'DESCENDING' }],
   },
   {
+    // The whole-platform daily payout ceiling: what was paid today.
+    collectionGroup: 'withdrawals',
+    queryScope: 'COLLECTION',
+    fields: [{ fieldPath: 'status', order: 'ASCENDING' }, { fieldPath: 'reviewedAt', order: 'ASCENDING' }],
+  },
+  {
     // A referrer's referral list.
     collectionGroup: 'referrals',
     queryScope: 'COLLECTION',

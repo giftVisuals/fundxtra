@@ -38,6 +38,7 @@ export function defaultSettings(): SystemSettings {
       minAmountKobo: LIMITS.MIN_CASH_WITHDRAWAL_KOBO,
       maxAmountKobo: LIMITS.MAX_CASH_WITHDRAWAL_KOBO,
       dailyLimitKobo: LIMITS.DAILY_WITHDRAWAL_LIMIT_KOBO,
+      platformDailyPayoutKobo: LIMITS.PLATFORM_DAILY_PAYOUT_CEILING_KOBO,
       feeKobo: 0,
       requireManualApproval: true,
     },
