@@ -1,4 +1,4 @@
-import type { Query, QuerySnapshot } from 'firebase-admin/firestore';
+import type { Query, QueryDocumentSnapshot, QuerySnapshot } from 'firebase-admin/firestore';
 import { logger } from './logger';
 
 /**
@@ -117,4 +117,72 @@ export function millisOf(value: unknown): number {
   }
 
   return 0;
+}
+
+/**
+ * Runs a query that mixes an equality filter with a range filter, and survives
+ * the absence of the composite index that combination needs.
+ *
+ * `runOrderedQuery` above covers lists: a missing index there costs ordering.
+ * This one covers the harder case — a query whose failure stops an action.
+ * The daily withdrawal total is the example that matters: it is checked before
+ * a withdrawal is created, so an unbuilt index does not degrade the feature,
+ * it blocks every withdrawal on the platform.
+ *
+ * The narrow query is attempted first, because when the index exists it is the
+ * right one. If it is refused, only the filters Firestore serves from its own
+ * automatic single-field indexes are sent, and the rest are applied to the
+ * documents that come back.
+ *
+ * The fallback reads more rows than it keeps, so it is capped — and the result
+ * says whether the cap was reached. That matters because callers differ in what
+ * a partial answer means: a count on a dashboard can be approximate, while a
+ * spending limit that under-counts is a limit that can be walked past. Callers
+ * doing the latter must treat `truncated` as a failure, not as a number.
+ */
+
+export interface FilteredQueryOptions {
+  /** Every filter applied. Wants a composite index. */
+  narrow: Query;
+  /** Only the filters Firestore serves without one. */
+  base: Query;
+  /** The filters `base` left out, re-applied in memory. */
+  matches: (doc: QueryDocumentSnapshot) => boolean;
+  /** Names the query in logs. */
+  label: string;
+  /** How many documents the fallback may read. Defaults to 500. */
+  cap?: number;
+}
+
+export interface FilteredQueryResult {
+  docs: QueryDocumentSnapshot[];
+  /** True when the fallback ran and the filtering happened in memory. */
+  usedFallback: boolean;
+  /** True when the fallback read its whole cap, so rows may be missing. */
+  truncated: boolean;
+}
+
+export async function runFilteredQuery(options: FilteredQueryOptions): Promise<FilteredQueryResult> {
+  try {
+    const snapshot = await options.narrow.get();
+    return { docs: snapshot.docs, usedFallback: false, truncated: false };
+  } catch (error) {
+    if (!isMissingIndex(error)) throw error;
+
+    const cap = options.cap ?? FALLBACK_FETCH_CAP;
+    const snapshot = await options.base.limit(cap).get();
+    const truncated = snapshot.size >= cap;
+
+    logger.warn(
+      {
+        query: options.label,
+        read: snapshot.size,
+        truncated,
+        hint: 'Filtering in memory until the composite index finishes building. Deploy firebase/firestore.indexes.json, or grant the service account Cloud Datastore Index Admin so the API can create it.',
+      },
+      'Composite index missing; using the in-memory filter fallback',
+    );
+
+    return { docs: snapshot.docs.filter(options.matches), usedFallback: true, truncated };
+  }
 }

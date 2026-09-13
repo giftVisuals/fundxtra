@@ -9,7 +9,7 @@ import {
   type User,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
-import { millisOf, runOrderedQuery } from '../lib/query-fallback';
+import { millisOf, runFilteredQuery, runOrderedQuery } from '../lib/query-fallback';
 import { toIso, toIsoRequired } from '../lib/time';
 import { logger } from '../lib/logger';
 import { idempotencyKey, postEntryIn } from './ledger';
@@ -326,24 +326,33 @@ export async function checkReferralVelocity(referrerId: string): Promise<{
   qualifiedLastHour: number;
 }> {
   const oneHourAgo = Timestamp.fromMillis(Date.now() - 3_600_000);
-  const snapshot = await db()
-    .collection(COLLECTIONS.referrals)
-    .where('referrerId', '==', referrerId)
-    .where('status', '==', 'QUALIFIED')
-    .where('qualifiedAt', '>=', oneHourAgo)
-    .get();
+  const collection = db().collection(COLLECTIONS.referrals);
 
-  const suspicious = snapshot.size >= 15;
+  // Runs inside qualification, so it must not be able to stop a referral bonus
+  // from being paid while the composite index for the time window is building.
+  const { docs } = await runFilteredQuery({
+    narrow: collection
+      .where('referrerId', '==', referrerId)
+      .where('status', '==', 'QUALIFIED')
+      .where('qualifiedAt', '>=', oneHourAgo),
+    // Two equality filters need no composite index of their own.
+    base: collection.where('referrerId', '==', referrerId).where('status', '==', 'QUALIFIED'),
+    matches: (doc) => millisOf(doc.get('qualifiedAt')) >= oneHourAgo.toMillis(),
+    label: 'referrals.checkReferralVelocity',
+  });
+
+  const qualifiedLastHour = docs.length;
+  const suspicious = qualifiedLastHour >= 15;
   if (suspicious) {
     recordSecurityEvent({
       type: 'SUSPICIOUS_VELOCITY',
       userId: referrerId,
-      message: `${snapshot.size} referrals qualified in the last hour`,
-      metadata: { qualifiedLastHour: snapshot.size },
+      message: `${qualifiedLastHour} referrals qualified in the last hour`,
+      metadata: { qualifiedLastHour },
     });
     await flagUser(referrerId, 'REFERRAL_VELOCITY', 20);
   }
-  return { suspicious, qualifiedLastHour: snapshot.size };
+  return { suspicious, qualifiedLastHour };
 }
 
 /** Copy explaining the qualification rule. Kept here so it cannot drift. */

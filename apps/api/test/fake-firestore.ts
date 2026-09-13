@@ -440,6 +440,20 @@ function comparable(value: unknown): number | string {
   if (value instanceof Date) return value.getTime();
   if (typeof value === 'number' || typeof value === 'string') return value;
   if (typeof value === 'boolean') return value ? 1 : 0;
+
+  // `seed` and `snapshot` structured-clone their documents, which strips the
+  // Timestamp prototype and leaves the bare `{_seconds, _nanoseconds}` the
+  // wire format uses. Without this, every stored timestamp compared equal as
+  // "[object Object]" and range filters quietly matched nothing — a fake that
+  // fails a query the real database answers is worse than no fake at all.
+  if (value && typeof value === 'object') {
+    const candidate = value as { _seconds?: unknown; _nanoseconds?: unknown };
+    if (typeof candidate._seconds === 'number') {
+      const nanos = typeof candidate._nanoseconds === 'number' ? candidate._nanoseconds : 0;
+      return candidate._seconds * 1_000 + Math.floor(nanos / 1_000_000);
+    }
+  }
+
   return String(value ?? '');
 }
 

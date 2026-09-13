@@ -112,6 +112,12 @@ export const REQUIRED_INDEXES: readonly RequiredIndex[] = [
     fields: [{ fieldPath: 'actorId', order: 'ASCENDING' }, { fieldPath: 'createdAt', order: 'DESCENDING' }],
   },
   {
+    // Fraud dashboard: PIN failures across the platform in a recent window.
+    collectionGroup: 'securityEvents',
+    queryScope: 'COLLECTION',
+    fields: [{ fieldPath: 'type', order: 'ASCENDING' }, { fieldPath: 'createdAt', order: 'ASCENDING' }],
+  },
+  {
     // Security events for one account.
     collectionGroup: 'securityEvents',
     queryScope: 'COLLECTION',

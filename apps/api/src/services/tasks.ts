@@ -20,6 +20,7 @@ import { COLLECTIONS, db } from '../lib/firebase';
 import { AppError, notFound } from '../lib/errors';
 import { deterministicId, newTaskId } from '../lib/ids';
 import { logger } from '../lib/logger';
+import { millisOf, runFilteredQuery } from '../lib/query-fallback';
 import { isFuture, isPast, nowIso, toIso, toIsoRequired } from '../lib/time';
 import { probeChatAccess } from '../lib/telegram-bot';
 import { getSettings } from './settings';
@@ -415,22 +416,32 @@ export function releaseBudgetIn(
 
 /** Sweep tasks whose end date has passed. Called from the task list endpoint. */
 export async function expireFinishedTasks(): Promise<number> {
-  const snapshot = await db()
-    .collection(COLLECTIONS.tasks)
-    .where('status', '==', 'ACTIVE')
-    .where('endsAt', '<=', Timestamp.now())
-    .limit(50)
-    .get();
+  const now = Timestamp.now();
+  const collection = db().collection(COLLECTIONS.tasks);
 
-  if (snapshot.empty) return 0;
+  // The task list calls this on every load, so a missing composite index here
+  // would take the whole earn screen down rather than just delay a sweep.
+  const { docs } = await runFilteredQuery({
+    narrow: collection.where('status', '==', 'ACTIVE').where('endsAt', '<=', now).limit(50),
+    base: collection.where('status', '==', 'ACTIVE'),
+    matches: (doc) => {
+      const endsAt = doc.get('endsAt');
+      return endsAt != null && millisOf(endsAt) <= now.toMillis();
+    },
+    label: 'tasks.expireFinishedTasks',
+  });
+
+  // The fallback has no limit of its own; the sweep stays one batch either way.
+  const expiring = docs.slice(0, 50);
+  if (expiring.length === 0) return 0;
 
   const batch = db().batch();
-  for (const doc of snapshot.docs) {
+  for (const doc of expiring) {
     batch.update(doc.ref, { status: 'EXPIRED' as TaskStatus, updatedAt: Timestamp.now() });
   }
   await batch.commit();
-  logger.info({ count: snapshot.size }, 'Expired finished tasks');
-  return snapshot.size;
+  logger.info({ count: expiring.length }, 'Expired finished tasks');
+  return expiring.length;
 }
 
 export interface UserTaskState {

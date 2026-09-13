@@ -12,7 +12,7 @@ import {
   type WithdrawalStatus,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
-import { millisOf, runOrderedQuery } from '../lib/query-fallback';
+import { millisOf, runFilteredQuery, runOrderedQuery } from '../lib/query-fallback';
 import { AppError, notFound } from '../lib/errors';
 import { newWithdrawalId } from '../lib/ids';
 import { logger } from '../lib/logger';
@@ -295,15 +295,41 @@ export async function cancelWithdrawal(userId: string, withdrawalId: string): Pr
   });
 }
 
+/**
+ * How much of today's limit the user has already spent.
+ *
+ * `userId ==` combined with a range on `requestedAt` is the one shape Firestore
+ * will not serve without a composite index, and this runs *before* a withdrawal
+ * is created — so while that index is building, an unguarded version of this
+ * function blocks every withdrawal on the platform rather than degrading
+ * anything. Hence the fallback: the user's own withdrawals are fetched by id
+ * alone and today's are picked out here.
+ *
+ * The fallback is capped, and a capped read is treated as a failure rather than
+ * as a total. This is a spending limit: a number that is quietly too low lets
+ * someone withdraw past it, which is worse than an error. One user reaching the
+ * cap of lifetime withdrawal requests is not a case that arises in practice.
+ */
 async function sumWithdrawnToday(userId: string): Promise<Kobo> {
-  const snapshot = await db()
-    .collection(COLLECTIONS.withdrawals)
-    .where('userId', '==', userId)
-    .where('requestedAt', '>=', Timestamp.fromDate(startOfPlatformDay()))
-    .get();
+  const since = Timestamp.fromDate(startOfPlatformDay());
+  const collection = db().collection(COLLECTIONS.withdrawals);
+
+  const { docs, truncated } = await runFilteredQuery({
+    narrow: collection.where('userId', '==', userId).where('requestedAt', '>=', since),
+    base: collection.where('userId', '==', userId),
+    matches: (doc) => millisOf(doc.get('requestedAt')) >= since.toMillis(),
+    label: 'withdrawals.sumWithdrawnToday',
+  });
+
+  if (truncated) {
+    logger.error({ userId }, 'Daily withdrawal total could not be measured completely');
+    throw new AppError(ERROR_CODES.DATABASE_SETUP_REQUIRED, {
+      message: 'We could not check your daily limit just now. Please try again shortly.',
+    });
+  }
 
   let total = 0;
-  for (const doc of snapshot.docs) {
+  for (const doc of docs) {
     const status = doc.get('status') as WithdrawalStatus;
     // Reversed outcomes freed the money, so they do not consume the limit.
     if (status === 'FAILED' || status === 'REJECTED' || status === 'CANCELLED') continue;

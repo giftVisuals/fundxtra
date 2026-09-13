@@ -2,6 +2,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 import { BLOCKED_PINS, ERROR_CODES, LIMITS } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
 import { AppError } from '../lib/errors';
+import { runFilteredQuery } from '../lib/query-fallback';
 import { hashPin, needsRehash, verifyPin } from '../lib/pin';
 import { logger } from '../lib/logger';
 import { minutesFromNow, toIso } from '../lib/time';
@@ -234,10 +235,15 @@ function assertPinAcceptable(pin: string): void {
 /** Count failed PIN attempts across the platform, for the fraud dashboard. */
 export async function recentPinFailures(minutes = 60): Promise<number> {
   const since = Timestamp.fromMillis(Date.now() - minutes * 60_000);
-  const snapshot = await db()
-    .collection(COLLECTIONS.securityEvents)
-    .where('type', 'in', ['PIN_FAILED', 'PIN_LOCKED'])
-    .where('createdAt', '>=', since)
-    .get();
-  return snapshot.size;
+  const collection = db().collection(COLLECTIONS.securityEvents);
+  const types = new Set(['PIN_FAILED', 'PIN_LOCKED']);
+
+  const { docs } = await runFilteredQuery({
+    narrow: collection.where('type', 'in', [...types]).where('createdAt', '>=', since),
+    // A range on one field alone is served by the automatic single-field index.
+    base: collection.where('createdAt', '>=', since),
+    matches: (doc) => types.has(doc.get('type') as string),
+    label: 'auth.recentPinFailures',
+  });
+  return docs.length;
 }
