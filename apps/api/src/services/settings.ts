@@ -51,7 +51,12 @@ export function defaultSettings(): SystemSettings {
       minDataKobo: LIMITS.MIN_DATA_KOBO,
       activeProvider: env.REWARD_PROVIDER,
     },
-    referrals: { enabled: true, rewardKobo: LIMITS.REFERRAL_REWARD_KOBO },
+    referrals: {
+      enabled: true,
+      rewardKobo: LIMITS.REFERRAL_REWARD_KOBO,
+      joinBonusKobo: LIMITS.REFERRAL_JOIN_BONUS_KOBO,
+      lateClaimDays: 7,
+    },
     tasks: {
       maxRewardKobo: LIMITS.MAX_TASK_REWARD_KOBO,
       earningEnabled: true,

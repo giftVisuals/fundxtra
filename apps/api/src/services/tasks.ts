@@ -686,7 +686,22 @@ export async function listTasksForUser(userId: string): Promise<TaskListItem[]> 
     } else if (submission?.status === 'PENDING_REVIEW') {
       userState = 'PENDING_REVIEW';
     } else if (submission?.status === 'REJECTED') {
-      userState = 'REJECTED';
+      /*
+        Rejected is a retry, not an ending.
+
+        A rejection says this attempt did not show what was asked for — not
+        that the person is barred from the task. They read the reason, take a
+        better screenshot, and try again. Treating it as final punished people
+        for a bad photo, and it also meant the campaign's budget, which is
+        released on rejection, had nobody left who could claim it.
+
+        The state stays REJECTED rather than collapsing to AVAILABLE, because
+        the reason is the useful part: the app shows it and says what to fix.
+        Availability is still checked, so a rejected task on a finished
+        campaign is correctly unavailable rather than a dead end offered as a
+        retry.
+      */
+      userState = availability.available ? 'REJECTED' : 'UNAVAILABLE';
       rejectionReason = submission.reason;
     } else if (!availability.available) {
       userState = 'UNAVAILABLE';

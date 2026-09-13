@@ -96,8 +96,14 @@ export function EarnPanel() {
     return category === 'ALL' ? tasks : tasks.filter((task) => task.category === category);
   }, [tasks, category]);
 
-  const available = visible.filter((task) => task.userState === 'AVAILABLE');
-  const other = visible.filter((task) => task.userState !== 'AVAILABLE');
+  /*
+    A rejected task belongs with the ones still to do, not in the history.
+    The person can fix their screenshot and try again, so burying it under a
+    clock is telling them it is over when it is not.
+  */
+  const todo = (state: TaskListItem['userState']) => state === 'AVAILABLE' || state === 'REJECTED';
+  const available = visible.filter((task) => todo(task.userState));
+  const other = visible.filter((task) => !todo(task.userState));
 
   const handleCompleted = useCallback(
     async (balanceAfterKobo?: number) => {

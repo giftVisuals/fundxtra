@@ -209,6 +209,11 @@ export const topUpBudgetSchema = z.object({
   addKobo: koboSchema,
 });
 
+/** Adding a referral code after signing up without one. */
+export const claimReferralSchema = z.object({
+  code: trimmed(16).min(4),
+});
+
 export const taskStatusChangeSchema = z.object({
   status: z.enum(['ACTIVE', 'PAUSED', 'DRAFT']),
   reason: trimmed(300).optional(),
@@ -372,7 +377,14 @@ export const systemSettingsUpdateSchema = z.object({
       activeProvider: z.enum(['none', 'mock', 'nasfampay']).optional(),
     })
     .optional(),
-  referrals: z.object({ enabled: z.boolean().optional(), rewardKobo: koboSchema.optional() }).optional(),
+  referrals: z
+    .object({
+      enabled: z.boolean().optional(),
+      rewardKobo: koboSchema.optional(),
+      joinBonusKobo: z.number().int().min(0).max(MAX_KOBO).optional(),
+      lateClaimDays: z.number().int().min(1).max(90).optional(),
+    })
+    .optional(),
   tasks: z
     .object({
       maxRewardKobo: koboSchema.max(LIMITS.MAX_TASK_REWARD_KOBO).optional(),

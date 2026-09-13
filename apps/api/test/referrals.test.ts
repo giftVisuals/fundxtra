@@ -19,7 +19,7 @@ vi.mock('../src/lib/firebase', async () => {
 // Settings are read on every referral call; serve them without Firestore.
 vi.mock('../src/services/settings', () => ({
   getSettings: async () => ({
-    referrals: { enabled: true, rewardKobo: 10_000 },
+    referrals: { enabled: true, rewardKobo: 10_000, joinBonusKobo: 5_000, lateClaimDays: 7 },
     platform: { botUsername: 'fundxtrabot' },
     withdrawals: {},
     rewards: {},
@@ -28,7 +28,7 @@ vi.mock('../src/services/settings', () => ({
   withdrawalAvailability: () => ({ open: false, reason: null, opensAt: null }),
 }));
 
-const { attributeReferral, qualifyReferral, getReferralSummary } = await import(
+const { attributeReferral, qualifyReferral, getReferralSummary, claimReferralCode } = await import(
   '../src/services/referrals'
 );
 const { mapUser } = await import('../src/services/users');
@@ -246,5 +246,97 @@ describe('summary', () => {
     expect(summary.earningsKobo).toBe(20_000);
     expect(summary.referralLink).toBe('https://t.me/fundxtrabot?start=CODE100');
     expect(summary.rewardPerReferralKobo).toBe(10_000);
+  });
+});
+
+/**
+ * Adding a referral code after signing up without one.
+ *
+ * Most people hear about Fundxtra from a friend and then open the bot
+ * directly, so the friend's code never travels with them and the friend
+ * concludes that promoting it earned them nothing. The box that fixes that is
+ * also the most farmable thing on the platform — a throwaway Telegram account
+ * typing any code is worth the joining bonus — so the guards are the feature.
+ */
+describe('claiming a referral code late', () => {
+  function claimant(id: string, overrides: Record<string, unknown> = {}) {
+    seedUser(id, { hasPin: true, onboardedAt: new Date().toISOString(), ...overrides });
+    return mapUser(id, store.snapshot()[`users/${id}`]!);
+  }
+
+  it('attributes the referral and pays the joining bonus', async () => {
+    seedUser('700');
+    const newcomer = claimant('701');
+
+    const outcome = await claimReferralCode(newcomer, 'CODE700');
+
+    expect(outcome.claimed).toBe(true);
+    expect(outcome.bonusKobo).toBe(5_000);
+    expect(store.snapshot()['users/701']?.referredBy).toBe('700');
+  });
+
+  it('is case-insensitive, because nobody types a code in caps', async () => {
+    seedUser('702');
+    const newcomer = claimant('703');
+
+    expect((await claimReferralCode(newcomer, '  code702  ')).claimed).toBe(true);
+  });
+
+  it('refuses somebody who has already earned', async () => {
+    seedUser('704');
+    const established = claimant('705', { lifetimeEarnedKobo: 40_000 });
+
+    /*
+      The real risk: an account that has been using the platform for weeks
+      suddenly attributing itself to a friend for the bonus. Nothing earned
+      means nothing to launder.
+    */
+    const outcome = await claimReferralCode(established, 'CODE704');
+    expect(outcome.claimed).toBe(false);
+    expect(outcome.reason).toBe('ALREADY_EARNED');
+  });
+
+  it('refuses an account older than the window', async () => {
+    seedUser('706');
+    const old = claimant('707', {
+      createdAt: new Date(Date.now() - 30 * 86_400_000).toISOString(),
+    });
+
+    // A dormant account suddenly attributed to somebody is more likely sold
+    // than late-remembered.
+    expect((await claimReferralCode(old, 'CODE706')).reason).toBe('WINDOW_CLOSED');
+  });
+
+  it('refuses a second code once one is set', async () => {
+    seedUser('708');
+    seedUser('709');
+    const newcomer = claimant('710', { referredBy: '708' });
+
+    expect((await claimReferralCode(newcomer, 'CODE709')).reason).toBe('ALREADY_ATTRIBUTED');
+  });
+
+  it('refuses your own code', async () => {
+    const selfish = claimant('711');
+
+    const outcome = await claimReferralCode(selfish, 'CODE711');
+    expect(outcome.claimed).toBe(false);
+    expect(store.snapshot()['users/711']?.referredBy).toBeNull();
+  });
+
+  it('refuses a code that does not exist', async () => {
+    const newcomer = claimant('712');
+    expect((await claimReferralCode(newcomer, 'NOTREAL1')).reason).toBe('UNKNOWN_CODE');
+  });
+
+  it('pays the bonus once, however many times it is tapped', async () => {
+    seedUser('713');
+    const newcomer = claimant('714');
+
+    await claimReferralCode(newcomer, 'CODE713');
+    const after = mapUser('714', store.snapshot()['users/714']!);
+    const second = await claimReferralCode(after, 'CODE713');
+
+    expect(second.claimed).toBe(false);
+    expect(store.snapshot()['users/714']?.balanceKobo).toBe(5_000);
   });
 });

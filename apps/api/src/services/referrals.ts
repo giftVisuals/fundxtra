@@ -12,7 +12,7 @@ import { COLLECTIONS, db } from '../lib/firebase';
 import { millisOf, runFilteredQuery, runOrderedQuery } from '../lib/query-fallback';
 import { toIso, toIsoRequired } from '../lib/time';
 import { logger } from '../lib/logger';
-import { idempotencyKey, postEntryIn } from './ledger';
+import { idempotencyKey, postEntry, postEntryIn } from './ledger';
 import { getSettings } from './settings';
 import { recordSecurityEvent } from './security';
 import { bumpStats } from './stats';
@@ -43,6 +43,8 @@ export interface AttributionResult {
   attributed: boolean;
   reason?: 'SELF_REFERRAL' | 'ALREADY_ATTRIBUTED' | 'UNKNOWN_CODE' | 'DISABLED' | 'INELIGIBLE';
   referrerId?: string;
+  /** First name of whoever's code it was, so the app can thank them by name. */
+  referrerName?: string;
 }
 
 /**
@@ -56,6 +58,7 @@ export interface AttributionResult {
 export async function attributeReferral(
   referredUser: User,
   referralCode: string,
+  options: { afterOnboarding?: boolean } = {},
 ): Promise<AttributionResult> {
   const settings = await getSettings();
   if (!settings.referrals.enabled) return { attributed: false, reason: 'DISABLED' };
@@ -66,9 +69,18 @@ export async function attributeReferral(
   // Already attributed: never overwrite, even if a different code arrives later.
   if (referredUser.referredBy) return { attributed: false, reason: 'ALREADY_ATTRIBUTED' };
 
-  // A user who already has a PIN is past the point where attribution is
-  // meaningful; accepting a code now would let someone farm their own history.
-  if (referredUser.hasPin || referredUser.onboardedAt) {
+  /*
+    At signup, a user who already has a PIN is past the point where attribution
+    is meaningful, and accepting a code then would let someone farm their own
+    history.
+
+    A deliberate late claim is the exception, and `claimReferralCode` is the
+    only caller that passes it. That path is not laxer — it applies its own,
+    stricter conditions (nothing earned yet, inside a fixed window) before ever
+    getting here. What it cannot use is *this* condition, because everybody has
+    a PIN within a minute of arriving.
+  */
+  if (!options.afterOnboarding && (referredUser.hasPin || referredUser.onboardedAt)) {
     return { attributed: false, reason: 'INELIGIBLE' };
   }
 
@@ -141,7 +153,7 @@ export async function attributeReferral(
     { referrerId: referrer.id, referredId: referredUser.id },
     'Referral attributed (pending qualification)',
   );
-  return { attributed: true, referrerId: referrer.id };
+  return { attributed: true, referrerId: referrer.id, referrerName: referrer.firstName };
 }
 
 class ReferralConflict extends Error {
@@ -170,6 +182,110 @@ export interface QualificationResult {
  * commit in one Firestore transaction: there is no window in which a referral
  * reads as QUALIFIED without the money having moved, or vice versa.
  */
+/**
+ * Add a referral code after signing up without one.
+ *
+ * Most people hear about Fundxtra from a friend and then open the bot
+ * directly — they search for it, or tap a link in a group, and the friend's
+ * code never travels with them. The friend gets nothing, notices that
+ * promoting it earned them nothing, and stops promoting it. That is how a
+ * referral programme quietly dies, and it dies from a missing text box.
+ *
+ * So a code can be added afterwards, inside a window that makes it safe:
+ *
+ * - **Nothing earned yet.** The risk is an established account attributing
+ *   itself to a friend for a bonus it has already worked around. Someone with
+ *   a zero balance has nothing to launder.
+ * - **Signed up recently.** An account dormant for months that is suddenly
+ *   attributed to somebody is more likely sold than late-remembered.
+ * - **Once, ever.** `referredBy` is never overwritten, here or anywhere.
+ * - Self-referral, unknown codes and inactive referrers are refused by
+ *   `attributeReferral`, which this delegates to rather than reimplementing.
+ *
+ * The joining bonus is paid in the same breath, and is a setting rather than
+ * a constant precisely because it is the farmable part: a throwaway Telegram
+ * account typing any code is worth exactly this much, so it must be possible
+ * to drop it to zero without a deploy.
+ */
+export type ClaimRefusal =
+  | 'DISABLED'
+  | 'ALREADY_ATTRIBUTED'
+  | 'WINDOW_CLOSED'
+  | 'ALREADY_EARNED'
+  | 'UNKNOWN_CODE'
+  | 'SELF_REFERRAL'
+  | 'INELIGIBLE';
+
+export interface ClaimOutcome {
+  claimed: boolean;
+  reason?: ClaimRefusal;
+  bonusKobo?: Kobo;
+  balanceAfterKobo?: Kobo;
+  referrerName?: string;
+}
+
+export async function claimReferralCode(user: User, code: string): Promise<ClaimOutcome> {
+  const settings = await getSettings();
+  if (!settings.referrals.enabled) return { claimed: false, reason: 'DISABLED' };
+
+  if (user.referredBy) return { claimed: false, reason: 'ALREADY_ATTRIBUTED' };
+
+  if (user.lifetimeEarnedKobo > 0) {
+    return { claimed: false, reason: 'ALREADY_EARNED' };
+  }
+
+  const ageDays = (Date.now() - new Date(user.createdAt).getTime()) / 86_400_000;
+  if (ageDays > settings.referrals.lateClaimDays) {
+    return { claimed: false, reason: 'WINDOW_CLOSED' };
+  }
+
+  const attribution = await attributeReferral(user, code, { afterOnboarding: true });
+  if (!attribution.attributed) {
+    const reason = attribution.reason;
+    return {
+      claimed: false,
+      reason:
+        reason === 'UNKNOWN_CODE' || reason === 'SELF_REFERRAL' || reason === 'ALREADY_ATTRIBUTED'
+          ? reason
+          : 'INELIGIBLE',
+    };
+  }
+
+  /*
+    The referrer is paid straight away rather than waiting for onboarding,
+    because a late claimer has already onboarded — that milestone is behind
+    them, and waiting for it again would mean it never arrives.
+  */
+  await qualifyReferral(user.id).catch((error: unknown) => {
+    logger.warn({ err: error, userId: user.id }, 'Could not qualify a claimed referral');
+    return { qualified: false };
+  });
+
+  const bonusKobo = settings.referrals.joinBonusKobo;
+  if (bonusKobo <= 0) {
+    return { claimed: true, bonusKobo: 0, referrerName: attribution.referrerName };
+  }
+
+  const entry = await postEntry({
+    userId: user.id,
+    type: 'BONUS',
+    amountKobo: bonusKobo,
+    description: 'Referral code bonus',
+    // Keyed on the user, so a retry or a double tap cannot pay twice.
+    idempotencyKey: idempotencyKey('join-bonus', user.id),
+    metadata: { referralCode: code.trim().toUpperCase() },
+  });
+
+  logger.info({ userId: user.id, bonusKobo }, 'Referral code claimed after signup');
+
+  return {
+    claimed: true,
+    bonusKobo,
+    balanceAfterKobo: entry.balanceAfterKobo,
+    referrerName: attribution.referrerName,
+  };
+}
+
 export async function qualifyReferral(referredUserId: string): Promise<QualificationResult> {
   const settings = await getSettings();
   if (!settings.referrals.enabled) return { qualified: false };

@@ -47,6 +47,8 @@ export const LIMITS = {
   MIN_DATA_KOBO: nairaToKobo(100) as Kobo,
   /** Reward for one qualified referral. */
   REFERRAL_REWARD_KOBO: nairaToKobo(100) as Kobo,
+  /** Paid to someone who adds a referral code after signing up without one. */
+  REFERRAL_JOIN_BONUS_KOBO: nairaToKobo(50) as Kobo,
   /** PIN shape. */
   PIN_LENGTH: 4,
   /** Failed PIN attempts before a temporary lock. */

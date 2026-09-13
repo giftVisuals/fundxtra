@@ -62,7 +62,8 @@ export function TaskFlow({
     user had done the whole thing again, which reads as the first one not
     having counted.
   */
-  const openForCompletion = task.userState === 'AVAILABLE';
+  const openForCompletion = task.userState === 'AVAILABLE' || task.userState === 'REJECTED';
+  const retrying = task.userState === 'REJECTED';
 
   const needsProof = task.requiresProof;
   const needsAnswer = task.verification === 'MANUAL_REVIEW';
@@ -255,6 +256,33 @@ export function TaskFlow({
           transition={tokens.motion.spring.panel}
           style={{ display: 'grid', gap: 16 }}
         >
+          {step === 'brief' && retrying && (
+            <Card padding={14}>
+              <p style={{ fontSize: tokens.typography.size.sm, fontWeight: tokens.typography.weight.semibold }}>
+                Your last try was turned down
+              </p>
+              <p
+                style={{
+                  marginTop: 4,
+                  fontSize: tokens.typography.size.sm,
+                  lineHeight: tokens.typography.leading.relaxed,
+                  color: tokens.semantic.inkMuted,
+                }}
+              >
+                {task.rejectionReason ?? 'It did not show what the task asked for.'}
+              </p>
+              <p
+                style={{
+                  marginTop: 6,
+                  fontSize: tokens.typography.size.sm,
+                  color: tokens.semantic.inkMuted,
+                }}
+              >
+                Nothing was deducted. Fix that and send a new screenshot — you can try again.
+              </p>
+            </Card>
+          )}
+
           {step === 'brief' && (
             <BriefStep task={task} opened={opened || !openForCompletion} onOpen={() => {
               setOpened(true);

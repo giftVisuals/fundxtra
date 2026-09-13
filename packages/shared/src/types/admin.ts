@@ -179,6 +179,25 @@ export interface SystemSettings {
   referrals: {
     enabled: boolean;
     rewardKobo: Kobo;
+    /**
+     * Paid to somebody who adds a referral code after signing up without one.
+     *
+     * The hook for the whole late-claim feature: most people hear about
+     * Fundxtra from a friend and then open the bot directly, which leaves the
+     * friend unpaid and the referrer with nothing to show for promoting it.
+     *
+     * Set to zero to switch the bonus off while keeping the attribution — the
+     * referrer still gets credited, the newcomer just gets nothing extra.
+     */
+    joinBonusKobo: Kobo;
+    /**
+     * How many days after signing up a code may still be added.
+     *
+     * A window rather than forever, because an account that has sat dormant
+     * for months and is suddenly attributed to somebody is far more likely to
+     * be a sold account than a late remembering.
+     */
+    lateClaimDays: number;
   };
   tasks: {
     /** Server-enforced ceiling; may be lowered below the hard cap, never raised. */

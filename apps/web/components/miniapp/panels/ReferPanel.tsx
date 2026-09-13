@@ -9,6 +9,8 @@ import {
   type ReferralSummary,
 } from '@fundxtra/shared';
 import { useResource } from '@/lib/resource';
+import { api, ApiError, errorMessage } from '@/lib/api';
+import { useSession } from '@/lib/session';
 import { supportUrl } from '@/lib/config';
 import { haptic, openExternal } from '@/lib/telegram';
 import {
@@ -38,6 +40,7 @@ interface ReferralPayload {
   referrals: ReferralRow[];
   qualification: string[];
   enabled: boolean;
+  codeClaim: { available: boolean; bonusKobo: number };
 }
 
 /**
@@ -53,6 +56,7 @@ interface ReferralPayload {
  * on by nudging them.
  */
 export function ReferPanel() {
+  const { refresh } = useSession();
   const [copied, setCopied] = useState(false);
 
   // Cached: leaving and returning to this tab should not re-read the referral
@@ -94,7 +98,7 @@ export function ReferPanel() {
     );
   }
 
-  const { summary, referrals, qualification, enabled } = data;
+  const { summary, referrals, qualification, enabled, codeClaim } = data;
 
   return (
     <div>
@@ -102,6 +106,20 @@ export function ReferPanel() {
         title="Refer"
         subtitle={`Earn ${formatNaira(summary.rewardPerReferralKobo)} for every friend who joins and sets up.`}
       />
+
+      {/*
+        Shown only while it can still be used. A box offering money that
+        refuses everything you type is worse than no box.
+      */}
+      {codeClaim.available && (
+        <ClaimCodeCard
+          bonusKobo={codeClaim.bonusKobo}
+          onClaimed={() => {
+            void load();
+            void refresh();
+          }}
+        />
+      )}
 
       {!enabled && (
         <Card tone="warning" padding={14} style={{ marginBottom: 16 }}>
@@ -293,5 +311,126 @@ export function ReferPanel() {
         )}
       </Section>
     </div>
+  );
+}
+
+/**
+ * "Someone told you about Fundxtra? Put their code in."
+ *
+ * Most people hear about a platform from a friend and then open the bot
+ * directly — they search for it, or tap a link in a group — and the friend's
+ * code never travels with them. The friend gets nothing, concludes that
+ * promoting it earned them nothing, and stops. A referral programme can die
+ * from a missing text box, and this is the box.
+ *
+ * It disappears the moment it is used or stops being usable, so nobody is ever
+ * looking at an offer they cannot take.
+ */
+function ClaimCodeCard({
+  bonusKobo,
+  onClaimed,
+}: {
+  bonusKobo: number;
+  onClaimed: () => void;
+}) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  const submit = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.post<{ bonusKobo?: number; referrerName?: string }>(
+        '/referrals/claim',
+        { code: code.trim().toUpperCase() },
+      );
+      haptic.success();
+      setDone(
+        result.bonusKobo
+          ? `${formatNaira(result.bonusKobo)} added${result.referrerName ? ` — thanks to ${result.referrerName}` : ''}.`
+          : 'Code added.',
+      );
+      onClaimed();
+    } catch (caught) {
+      haptic.error();
+      setError(
+        caught instanceof ApiError ? (caught.fieldError('code') ?? errorMessage(caught)) : errorMessage(caught),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [code, onClaimed]);
+
+  if (done) {
+    return (
+      <Card tone="brand" padding={14} style={{ marginBottom: 16 }}>
+        <p style={{ fontSize: tokens.typography.size.sm, fontWeight: tokens.typography.weight.semibold, color: tokens.colors.cocoa[800] }}>
+          🎉 {done}
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card tone="brand" padding={14} style={{ marginBottom: 16 }}>
+      <p style={{ fontSize: tokens.typography.size.sm, fontWeight: tokens.typography.weight.semibold, color: tokens.colors.cocoa[800] }}>
+        Did a friend tell you about Fundxtra?
+      </p>
+      <p
+        style={{
+          marginTop: 4,
+          fontSize: tokens.typography.size.xs,
+          lineHeight: tokens.typography.leading.relaxed,
+          color: tokens.colors.cocoa[700],
+        }}
+      >
+        {bonusKobo > 0
+          ? `Enter their code and we will add ${formatNaira(bonusKobo)} to your balance. They get credited too.`
+          : 'Enter their code so they get credited for bringing you here.'}
+      </p>
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        <input
+          value={code}
+          onChange={(event) => {
+            setCode(event.target.value.toUpperCase());
+            setError(null);
+          }}
+          placeholder="FX7K2M9Q"
+          autoCapitalize="characters"
+          autoCorrect="off"
+          spellCheck={false}
+          maxLength={16}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            padding: '11px 12px',
+            fontFamily: tokens.typography.fontMono,
+            fontSize: tokens.typography.size.base,
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            background: '#fff',
+            border: `1px solid ${error ? tokens.colors.danger.base : tokens.semantic.border}`,
+            borderRadius: tokens.radii.md,
+          }}
+        />
+        <Button
+          size="md"
+          loading={busy}
+          disabled={busy || code.trim().length < 4}
+          onClick={() => void submit()}
+        >
+          Add
+        </Button>
+      </div>
+
+      {error && (
+        <p role="alert" style={{ marginTop: 8, fontSize: tokens.typography.size.xs, color: tokens.colors.danger.strong }}>
+          {error}
+        </p>
+      )}
+    </Card>
   );
 }

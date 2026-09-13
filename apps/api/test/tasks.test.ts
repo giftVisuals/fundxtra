@@ -44,6 +44,7 @@ const {
   topUpBudget,
   updateTask,
   listTasksForUser,
+  invalidateTaskCache,
 } = await import('../src/services/tasks');
 const { mapUser } = await import('../src/services/users');
 
@@ -658,5 +659,72 @@ describe('a task the user has already done', () => {
         proofPath: 'https://i.ibb.co/a/second.png', dwellSeconds: 30,
       }),
     ).rejects.toThrow();
+  });
+});
+
+/**
+ * A rejected task is a retry, not an ending.
+ *
+ * Reported: after a rejection the task moved to the "already handled" list and
+ * the user could not send another screenshot. A rejection says this attempt
+ * did not show what was asked for — not that the person is barred. The budget
+ * is released on rejection too, so treating it as final also left money in a
+ * campaign that nobody could claim.
+ */
+describe('after a rejection', () => {
+  async function rejectedOnce() {
+    seedUser('600', 0);
+    seedTask('shot', {
+      verification: 'SCREENSHOT', requiresProof: true,
+      rewardKobo: 4_000, budgetKobo: 40_000, maxCompletions: 10, perUserLimit: 1,
+    });
+    await completeTask({
+      user: user('600'), taskId: 'shot', proofPath: 'https://i.ibb.co/a/b.png', dwellSeconds: 30,
+    });
+
+    const submissionId = Object.keys(store.snapshot())
+      .find((path) => path.startsWith('taskSubmissions/'))!
+      .split('/')[1]!;
+
+    await reviewSubmission({
+      submissionId, decision: 'REJECT', reviewerId: 'admin-1',
+      reason: 'The screenshot does not show the Following button.',
+    });
+  }
+
+  it('offers the task again, with the reason attached', async () => {
+    await rejectedOnce();
+
+    const row = (await listTasksForUser('600')).find((entry) => entry.id === 'shot');
+
+    expect(row?.userState).toBe('REJECTED');
+    expect(row?.rejectionReason).toContain('Following button');
+  });
+
+  it('accepts a second screenshot', async () => {
+    await rejectedOnce();
+
+    // The complaint: this was impossible.
+    const retry = await completeTask({
+      user: user('600'), taskId: 'shot', proofPath: 'https://i.ibb.co/a/better.png', dwellSeconds: 30,
+    });
+
+    expect(retry.state).toBe('PENDING_REVIEW');
+  });
+
+  it('does not offer a retry on a campaign that has finished', async () => {
+    await rejectedOnce();
+    // The campaign is fully claimed while the user decides whether to retry.
+    store.seed('tasks', 'shot', {
+      ...store.snapshot()['tasks/shot'],
+      status: 'COMPLETED', spentKobo: 40_000, completionCount: 10,
+    });
+    invalidateTaskCache();
+
+    const row = (await listTasksForUser('600')).find((entry) => entry.id === 'shot');
+
+    // A retry that cannot be completed is a dead end dressed as an offer, so a
+    // finished campaign drops off the list entirely rather than inviting one.
+    expect(row).toBeUndefined();
   });
 });
