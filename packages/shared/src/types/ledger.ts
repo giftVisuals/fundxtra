@@ -1,4 +1,5 @@
 import type { Kobo } from '../money';
+import type { WithdrawalStatus } from './payout';
 import type { IsoDate } from './common';
 
 /**
@@ -81,7 +82,50 @@ export interface TransactionRow {
   status: TransactionStatus;
   description: string;
   reference: string | null;
+  /**
+   * Balance immediately after this entry.
+   *
+   * Sent to the client because it is what makes a receipt settle an
+   * argument: "you were owed X before, Y after" is checkable, where an
+   * amount alone is not. It is stored on every entry regardless; this only
+   * stops the API discarding it on the way out.
+   */
+  balanceAfterKobo: Kobo;
   createdAt: IsoDate;
+}
+
+/**
+ * Everything a receipt prints, for one transaction.
+ *
+ * Assembled rather than stored: the ledger entry is the source of truth for
+ * the money, and the withdrawal record — when there is one — is the source of
+ * truth for where it went. A receipt that copied either at write time would
+ * drift the moment an admin reviewed the payout.
+ */
+export interface TransactionReceipt {
+  transaction: TransactionRow & {
+    /** Populated for entries an admin created, so a query can be answered. */
+    actorAdminId: string | null;
+    reversalOf: string | null;
+  };
+  /** Present when this entry is a cash withdrawal. */
+  withdrawal: {
+    id: string;
+    status: WithdrawalStatus;
+    amountKobo: Kobo;
+    feeKobo: Kobo;
+    netKobo: Kobo;
+    bankName: string;
+    accountNumber: string;
+    accountName: string;
+    requestedAt: IsoDate;
+    reviewedAt: IsoDate | null;
+    failureReason: string | null;
+  } | null;
+  /** Support handle to quote the reference to, from settings. */
+  supportHandle: string;
+  /** When the receipt was assembled — printed on it, like a bank does. */
+  issuedAt: IsoDate;
 }
 
 export type ReferralStatus = 'PENDING' | 'QUALIFIED' | 'REJECTED';

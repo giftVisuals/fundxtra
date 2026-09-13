@@ -14,7 +14,7 @@ import { rateLimit } from '../middleware/rate-limit';
 import { ok } from '../middleware/respond';
 import { parsed, pathParam, query, validateBody, validateQuery } from '../middleware/validate';
 import { checkPin } from '../services/auth';
-import { listUserTransactions } from '../services/ledger';
+import { getTransactionReceipt, listUserTransactions } from '../services/ledger';
 import { listRewardCatalogue, listUserRedemptions, redeem } from '../services/rewards';
 import { getSettings, withdrawalAvailability } from '../services/settings';
 import { cancelWithdrawal, listUserWithdrawals, requestWithdrawal } from '../services/withdrawals';
@@ -72,6 +72,23 @@ walletRouter.get(
     }
   },
 );
+
+/**
+ * One transaction, with everything a receipt prints.
+ *
+ * Authenticated but not PIN-gated: reading your own history is not a money
+ * movement, and demanding a PIN to look at a receipt would push people to
+ * screenshot the list instead. Ownership is enforced in the service, which
+ * answers "not found" for someone else's id rather than confirming it exists.
+ */
+walletRouter.get('/transactions/:transactionId', ...authenticated, async (req, res, next) => {
+  try {
+    const transactionId = pathParam(req, 'transactionId');
+    ok(res, await getTransactionReceipt(req.user!.id, transactionId));
+  } catch (error) {
+    next(error);
+  }
+});
 
 walletRouter.get('/withdrawals', ...authenticated, async (req, res, next) => {
   try {

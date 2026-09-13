@@ -7,16 +7,19 @@ import {
   assertPositiveKobo,
   type Kobo,
   type Transaction,
+  type TransactionReceipt,
   type TransactionRow,
   type TransactionStatus,
   type TransactionType,
+  type WithdrawalStatus,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
 import { millisOf, runOrderedQuery } from '../lib/query-fallback';
 import { AppError, internal, notFound } from '../lib/errors';
 import { newTransactionId } from '../lib/ids';
 import { logger } from '../lib/logger';
-import { nowIso, startOfPlatformDay, toIsoRequired } from '../lib/time';
+import { getSettings } from './settings';
+import { nowIso, startOfPlatformDay, toIso, toIsoRequired } from '../lib/time';
 
 /**
  * The ledger.
@@ -322,6 +325,7 @@ export async function listUserTransactions(
         status: transaction.status,
         description: transaction.description,
         reference: transaction.reference,
+        balanceAfterKobo: transaction.balanceAfterKobo,
         createdAt: transaction.createdAt,
       };
     }),
@@ -455,4 +459,80 @@ export function idempotencyKey(...parts: string[]): string {
     .map((part) => part.replace(/[^\w.-]/g, '_'))
     .join('__')
     .slice(0, 1_400);
+}
+
+/**
+ * One transaction, with everything a receipt prints.
+ *
+ * Scoped to the caller by construction: the owner is compared before anything
+ * is returned, so a guessed transaction id reveals nothing. A ledger id is not
+ * a secret, but someone else's payout details are.
+ *
+ * The withdrawal block is read live rather than copied onto the entry, because
+ * its status changes after the entry is written — a receipt fetched before and
+ * after an admin approves a payout must not disagree with the wallet.
+ */
+export async function getTransactionReceipt(
+  userId: string,
+  transactionId: string,
+): Promise<TransactionReceipt> {
+  const snapshot = await db().collection(COLLECTIONS.transactions).doc(transactionId).get();
+  if (!snapshot.exists) throw notFound('that transaction');
+
+  const transaction = mapTransaction(snapshot.id, snapshot.data() ?? {});
+  if (transaction.userId !== userId) {
+    // Deliberately the same answer as a missing row: confirming that an id
+    // exists but belongs to someone else is itself a disclosure.
+    throw notFound('that transaction');
+  }
+
+  const settings = await getSettings();
+
+  let withdrawal: TransactionReceipt['withdrawal'] = null;
+  if (transaction.type === 'CASH_WITHDRAWAL' && transaction.reference) {
+    const record = await db()
+      .collection(COLLECTIONS.withdrawals)
+      .doc(transaction.reference)
+      .get();
+
+    if (record.exists && record.get('userId') === userId) {
+      const bank = (record.get('bank') ?? {}) as {
+        bankName?: string;
+        accountNumber?: string;
+        accountName?: string;
+      };
+      withdrawal = {
+        id: record.id,
+        status: (record.get('status') as WithdrawalStatus | undefined) ?? 'PENDING',
+        amountKobo: (record.get('amountKobo') as number | undefined) ?? 0,
+        feeKobo: (record.get('feeKobo') as number | undefined) ?? 0,
+        netKobo: (record.get('netKobo') as number | undefined) ?? 0,
+        bankName: bank.bankName ?? 'Unknown bank',
+        accountNumber: bank.accountNumber ?? '',
+        accountName: bank.accountName ?? '',
+        requestedAt: toIsoRequired(record.get('requestedAt'), transaction.createdAt),
+        reviewedAt: toIso(record.get('reviewedAt')),
+        failureReason: (record.get('failureReason') as string | null) ?? null,
+      };
+    }
+  }
+
+  return {
+    transaction: {
+      id: transaction.id,
+      type: transaction.type,
+      direction: transaction.direction,
+      amountKobo: transaction.amountKobo,
+      status: transaction.status,
+      description: transaction.description,
+      reference: transaction.reference,
+      balanceAfterKobo: transaction.balanceAfterKobo,
+      createdAt: transaction.createdAt,
+      actorAdminId: transaction.actorAdminId,
+      reversalOf: transaction.reversalOf,
+    },
+    withdrawal,
+    supportHandle: settings.platform.supportHandle,
+    issuedAt: nowIso(),
+  };
 }

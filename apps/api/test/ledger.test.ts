@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Timestamp } from 'firebase-admin/firestore';
 import { FakeFirestore } from './fake-firestore';
 
 /**
@@ -366,5 +367,99 @@ describe('history', () => {
     } finally {
       store.collection = original;
     }
+  });
+});
+
+describe('transaction receipts', () => {
+  /*
+    A receipt is read by id, and a ledger id is not a secret. What must not
+    leak is someone else's payout: their bank, their account number, their
+    name. So the owner check is the test that matters here.
+  */
+  it('assembles a reward receipt from the ledger entry', async () => {
+    seedUser('u1', 0);
+    const { transaction } = await postEntry({
+      userId: 'u1', type: 'REFERRAL_REWARD', amountKobo: 10_000,
+      description: 'Qualified referral', idempotencyKey: 'k1',
+    });
+
+    const { getTransactionReceipt } = await import('../src/services/ledger');
+    const receipt = await getTransactionReceipt('u1', transaction.id);
+
+    expect(receipt.transaction.amountKobo).toBe(10_000);
+    expect(receipt.transaction.balanceAfterKobo).toBe(10_000);
+    expect(receipt.transaction.description).toBe('Qualified referral');
+    // No withdrawal is involved, so there is nothing to print for one.
+    expect(receipt.withdrawal).toBeNull();
+    expect(receipt.issuedAt).toBeTruthy();
+  });
+
+  it('refuses another user’s transaction as not found', async () => {
+    seedUser('u1', 0);
+    seedUser('u2', 0);
+    const { transaction } = await postEntry({
+      userId: 'u1', type: 'TASK_REWARD', amountKobo: 5_000,
+      description: 'Task', idempotencyKey: 'k2',
+    });
+
+    const { getTransactionReceipt } = await import('../src/services/ledger');
+
+    // "Not found" rather than "forbidden": confirming the id exists but
+    // belongs to someone else is itself a disclosure.
+    await expect(getTransactionReceipt('u2', transaction.id)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+  });
+
+  it('refuses an id that does not exist', async () => {
+    seedUser('u1', 0);
+    const { getTransactionReceipt } = await import('../src/services/ledger');
+
+    await expect(getTransactionReceipt('u1', 'made-up-id')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+  });
+
+  it('prints the bank details on a withdrawal receipt', async () => {
+    seedUser('u1', 500_000);
+    const { transaction } = await postEntry({
+      userId: 'u1', type: 'CASH_WITHDRAWAL', amountKobo: 250_000,
+      description: 'Withdrawal to Kuda', reference: 'wd-1', idempotencyKey: 'k3',
+    });
+    store.seed('withdrawals', 'wd-1', {
+      userId: 'u1', status: 'PENDING', amountKobo: 250_000, feeKobo: 0, netKobo: 250_000,
+      bank: { bankName: 'Kuda Microfinance Bank', accountNumber: '2094417803', accountName: 'AISHA BELLO' },
+      transactionId: transaction.id, requestedAt: Timestamp.now(), reviewedAt: null, failureReason: null,
+    });
+
+    const { getTransactionReceipt } = await import('../src/services/ledger');
+    const receipt = await getTransactionReceipt('u1', transaction.id);
+
+    expect(receipt.withdrawal).not.toBeNull();
+    expect(receipt.withdrawal?.bankName).toBe('Kuda Microfinance Bank');
+    expect(receipt.withdrawal?.accountNumber).toBe('2094417803');
+    expect(receipt.withdrawal?.netKobo).toBe(250_000);
+    // Status is read live, so approving the payout later changes the receipt
+    // rather than leaving a stale copy.
+    expect(receipt.withdrawal?.status).toBe('PENDING');
+  });
+
+  it('does not attach a withdrawal that belongs to someone else', async () => {
+    seedUser('u1', 500_000);
+    const { transaction } = await postEntry({
+      userId: 'u1', type: 'CASH_WITHDRAWAL', amountKobo: 250_000,
+      description: 'Withdrawal', reference: 'wd-other', idempotencyKey: 'k4',
+    });
+    // A reference pointing at a record owned by another user must not print.
+    store.seed('withdrawals', 'wd-other', {
+      userId: 'someone-else', status: 'PAID', amountKobo: 250_000, feeKobo: 0, netKobo: 250_000,
+      bank: { bankName: 'Zenith Bank', accountNumber: '1111111111', accountName: 'NOT YOURS' },
+      requestedAt: Timestamp.now(), reviewedAt: null, failureReason: null,
+    });
+
+    const { getTransactionReceipt } = await import('../src/services/ledger');
+    const receipt = await getTransactionReceipt('u1', transaction.id);
+
+    expect(receipt.withdrawal).toBeNull();
   });
 });
