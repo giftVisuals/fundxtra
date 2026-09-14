@@ -55,7 +55,7 @@ export default async function TermsPage() {
         {
           heading: 'Referrals',
           paragraphs: [
-            'You earn a referral reward when someone opens Fundxtra through your link, creates their PIN, and reaches their dashboard. They do not need to complete a task.',
+            'You earn a referral reward when someone opens Fundxtra through your link, creates their PIN, and completes their first task. The reward is paid once they have been credited for that task, not when they sign up.',
             'One Telegram account can only ever be referred once. Referring yourself, creating additional accounts to refer, or using automated means to generate referrals is not allowed and results in those referrals being rejected.',
           ],
         },

@@ -104,7 +104,7 @@ export function ReferPanel() {
     <div>
       <PanelHeader
         title="Refer"
-        subtitle={`Earn ${formatNaira(summary.rewardPerReferralKobo)} for every friend who joins and sets up.`}
+        subtitle={`Earn ${formatNaira(summary.rewardPerReferralKobo)} for every friend who joins and earns their first reward.`}
       />
 
       {/*
@@ -255,8 +255,8 @@ export function ReferPanel() {
               color: tokens.semantic.inkMuted,
             }}
           >
-            Your friend does not need to complete a task for you to get paid. One reward per
-            Telegram account, and self-referrals do not count.
+            You are paid once your friend earns their first reward — not when they sign up.
+            One reward per Telegram account, and self-referrals do not count.
           </p>
         </Card>
       </Section>

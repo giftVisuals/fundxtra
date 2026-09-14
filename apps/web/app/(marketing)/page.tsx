@@ -274,7 +274,7 @@ export default async function LandingPage() {
               },
               {
                 title: 'Refer friends',
-                body: `${referralReward} for every friend who joins through your link and finishes setting up. They do not need to complete a task.`,
+                body: `${referralReward} for every friend who joins through your link and earns their first reward. You are paid when they do, not when they sign up.`,
               },
               {
                 title: 'Withdraw or redeem',

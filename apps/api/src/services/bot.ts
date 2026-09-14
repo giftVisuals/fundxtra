@@ -99,7 +99,7 @@ function startMessage(
     invited,
     '\n\nHere is how it works:',
     '\n• Complete sponsored tasks and earn Naira rewards',
-    `\n• Invite friends and earn ${formatNaira(LIMITS.REFERRAL_REWARD_KOBO)} per friend who joins and sets a PIN`,
+    `\n• Invite friends and earn ${formatNaira(LIMITS.REFERRAL_REWARD_KOBO)} per friend who joins and earns their first reward`,
     '\n• Withdraw as cash, or redeem airtime, data, Telegram Stars or Premium',
     '\n\nTap below to open the app and set your 4-digit PIN.',
   ].join('');
