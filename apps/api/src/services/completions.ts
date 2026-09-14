@@ -17,6 +17,7 @@ import { checkChatMembership } from '../lib/telegram-bot';
 import { idempotencyKey, postEntryIn } from './ledger';
 import { recordSecurityEvent } from './security';
 import { getSettings } from './settings';
+import { qualifyReferral } from './referrals';
 import { reviewScreenshot, reviewerConfigured } from './screenshot-review';
 import { escalateForReview } from './review-escalation';
 import { bumpStats } from './stats';
@@ -284,6 +285,9 @@ async function creditCompletion(
       logger.info({ taskId: task.id }, 'Task auto-completed: budget or completion cap reached');
     }
 
+    // Whoever referred this user has now earned their reward.
+    qualifyReferrerFor(user.id);
+
     return {
       state: 'CREDITED',
       rewardKobo: result.reservation.rewardKobo,
@@ -391,6 +395,31 @@ async function submitForReview(
  */
 const AUTO_REVIEWER_ID = 'auto-reviewer';
 
+/**
+ * A referral qualifies when the person it brought in first earns something.
+ *
+ * It used to qualify the moment they set a PIN, which is about fifteen seconds
+ * of work — so a farmer with a handful of throwaway Telegram accounts could
+ * collect the referral reward on each of them without the platform getting
+ * anything at all. The joining bonus was never the prize; this was, because it
+ * is larger and it lands on an account that can actually withdraw.
+ *
+ * Tying it to a completed task does not block that farmer. It makes the cheat
+ * cost more than the honest path: to collect, the fake account must get a
+ * screenshot past review, which is real work, for a real sponsor, on a real
+ * campaign. At that point it has stopped being fraud.
+ *
+ * Fire-and-forget, and idempotent twice over — the referral must be PENDING,
+ * and the ledger entry is keyed on the pair. A second completed task cannot
+ * pay a second reward, and a failure here must never roll back the task the
+ * user just earned.
+ */
+function qualifyReferrerFor(userId: string): void {
+  void qualifyReferral(userId).catch((error: unknown) => {
+    logger.warn({ err: error, userId }, 'Could not qualify a referral after a completed task');
+  });
+}
+
 async function autoReview(options: {
   submissionId: string;
   task: Task;
@@ -477,6 +506,7 @@ export async function reviewSubmission(input: {
         });
         return {
           status: 'REJECTED' as SubmissionStatus,
+          userId: submission.userId,
           rewardKobo: submission.rewardKobo,
           transactionId: null,
           telegramId: submission.userTelegramId,
@@ -526,6 +556,7 @@ export async function reviewSubmission(input: {
 
       return {
         status: 'APPROVED' as SubmissionStatus,
+        userId: submission.userId,
         rewardKobo: submission.rewardKobo,
         transactionId: entry.transaction.id,
         telegramId: submission.userTelegramId,
@@ -544,6 +575,9 @@ export async function reviewSubmission(input: {
       submission that silently never resolves is the review experience users
       complain about, and the message says plainly that nothing was deducted.
     */
+    // An approved screenshot is an earning, so it qualifies the referral too.
+    if (result.status === 'APPROVED') qualifyReferrerFor(result.userId);
+
     if (result.telegramId) {
       if (result.status === 'APPROVED') {
         notifyTaskApproved({

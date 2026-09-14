@@ -270,11 +270,15 @@ authRouter.get('/session', ...authenticated, loadAdmin, async (req, res, next) =
   try {
     const sessionUser = req.user!;
 
+    /*
+      Onboarding is recorded here, but it no longer pays the referrer.
+      Qualification moved to the first completed task: setting a PIN is
+      fifteen seconds of work, which made a referral reward collectable by
+      anybody with a few throwaway Telegram accounts. See
+      services/completions.ts.
+    */
     if (sessionUser.hasPin) {
-      const { transitioned } = await markOnboarded(sessionUser.id);
-      if (transitioned) {
-        await qualifyReferral(sessionUser.id);
-      }
+      await markOnboarded(sessionUser.id);
     }
 
     // Re-read: qualification may have changed this user's own counters, and a

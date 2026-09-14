@@ -252,14 +252,11 @@ export async function claimReferralCode(user: User, code: string): Promise<Claim
   }
 
   /*
-    The referrer is paid straight away rather than waiting for onboarding,
-    because a late claimer has already onboarded — that milestone is behind
-    them, and waiting for it again would mean it never arrives.
+    The referrer is not paid here. A late claim requires the claimer to have
+    earned nothing yet, so by definition they have not completed a task — and
+    completing one is what qualifies a referral now. Paying on the claim itself
+    would hand back exactly the shortcut that rule exists to close.
   */
-  await qualifyReferral(user.id).catch((error: unknown) => {
-    logger.warn({ err: error, userId: user.id }, 'Could not qualify a claimed referral');
-    return { qualified: false };
-  });
 
   const bonusKobo = settings.referrals.joinBonusKobo;
   if (bonusKobo <= 0) {
@@ -472,11 +469,19 @@ export async function checkReferralVelocity(referrerId: string): Promise<{
 }
 
 /** Copy explaining the qualification rule. Kept here so it cannot drift. */
+/**
+ * The rule, in the order it happens.
+ *
+ * Sourced from here and rendered by the app rather than written twice, so the
+ * promise on the Refer screen cannot drift from what the server enforces. A
+ * referral programme where people cannot tell why a referral did or did not
+ * pay is where trust goes to die.
+ */
 export function qualificationExplanation(rewardKobo: Kobo): string[] {
   return [
     'Your friend opens Fundxtra from your link',
     'They create their 4-digit PIN',
-    'They reach their dashboard',
+    'They complete their first task and get paid for it',
     `Your ${formatNaira(rewardKobo)} lands in your balance`,
   ];
 }

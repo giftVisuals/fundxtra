@@ -179,51 +179,101 @@ describe('PIN gate', () => {
   });
 });
 
+/**
+ * A referral is paid for a user, not for a signup.
+ *
+ * It used to pay the moment the referred user reached their dashboard — about
+ * fifteen seconds after arriving. That made the ₦100 collectable by anybody
+ * with a few throwaway Telegram accounts, and unlike the joining bonus it
+ * lands on an account that can actually withdraw.
+ *
+ * It now waits for their first completed task. That does not block a farmer;
+ * it makes the cheat cost more than the honest path, because the fake account
+ * has to do real work on a real campaign before anyone is paid.
+ */
 describe('referral qualification over HTTP', () => {
-  it('pays the referrer ₦100 when the referred user reaches the dashboard', async () => {
-    // The referrer signs up and finishes onboarding.
+  function seedHonourTask(id: string) {
+    store.seed('tasks', id, {
+      title: 'Read the announcement', description: 'Open it and read.',
+      instructions: ['Open it'], category: 'OTHER', status: 'ACTIVE',
+      verification: 'HONOUR', requiresProof: false,
+      rewardKobo: 2_000, budgetKobo: 200_000, spentKobo: 0,
+      maxCompletions: 100, completionCount: 0, pendingCount: 0, perUserLimit: 1,
+      targetUrl: 'https://example.com', telegramChatId: null, telegramChatLabel: null,
+      verificationWarning: null, reviewCriteria: null, sponsor: null,
+      startsAt: null, endsAt: null, minimumDwellSeconds: 0, sortWeight: 100,
+      createdBy: 'admin', createdAt: new Date(), updatedAt: new Date(),
+    });
+  }
+
+  it('does not pay the referrer for a signup alone', async () => {
     const referrer = await signInWithPin(555_100, '8351', { username: 'referrer' });
     await request(app).get('/auth/session').set('authorization', `Bearer ${referrer.token}`);
-    const code = referrer.user.referralCode;
 
-    // The friend arrives through the referral link.
-    const friend = await signIn(555_101, { username: 'friend', startParam: code });
-    expect(friend.needsPin).toBe(true);
-
-    // Still pending: they have not created a PIN yet.
-    expect(store.snapshot()['referrals/555101']?.status).toBe('PENDING');
-    expect(store.snapshot()['users/555100']?.balanceKobo).toBe(0);
-
-    // They create a PIN and reach the dashboard.
+    const friend = await signIn(555_101, { username: 'friend', startParam: referrer.user.referralCode });
     const withPin = await request(app)
       .post('/auth/pin')
       .set('authorization', `Bearer ${friend.token}`)
       .send({ pin: '4729', confirmPin: '4729' });
+
+    // Dashboard reached, PIN set — everything the old rule asked for.
     await request(app).get('/auth/session').set('authorization', `Bearer ${withPin.body.data.token}`);
 
-    // Qualified, and the ₦100 has landed — with no task completed by anyone.
-    expect(store.snapshot()['referrals/555101']?.status).toBe('QUALIFIED');
-    expect(store.snapshot()['users/555100']?.balanceKobo).toBe(10_000);
-    expect(store.snapshot()['users/555100']?.qualifiedReferralCount).toBe(1);
-    expect(store.countIn('taskCompletions')).toBe(0);
+    expect(store.snapshot()['referrals/555101']?.status).toBe('PENDING');
+    expect(store.snapshot()['users/555100']?.balanceKobo).toBe(0);
   });
 
-  it('does not pay twice when the dashboard is loaded repeatedly', async () => {
-    const referrer = await signInWithPin(555_110, '8351');
+  it('pays the referrer once the friend completes a task', async () => {
+    const referrer = await signInWithPin(555_120, '8351');
     await request(app).get('/auth/session').set('authorization', `Bearer ${referrer.token}`);
+    seedHonourTask('read-it');
 
-    const friend = await signIn(555_111, { startParam: referrer.user.referralCode });
+    const friend = await signIn(555_121, { startParam: referrer.user.referralCode });
     const withPin = await request(app)
       .post('/auth/pin')
       .set('authorization', `Bearer ${friend.token}`)
       .send({ pin: '4729', confirmPin: '4729' });
+    const friendToken = withPin.body.data.token as string;
+    await request(app).get('/auth/session').set('authorization', `Bearer ${friendToken}`);
 
-    for (let index = 0; index < 4; index += 1) {
-      await request(app).get('/auth/session').set('authorization', `Bearer ${withPin.body.data.token}`);
+    const completion = await request(app)
+      .post('/tasks/read-it/complete')
+      .set('authorization', `Bearer ${friendToken}`)
+      .send({ dwellSeconds: 20 });
+    expect(completion.status).toBe(200);
+
+    // Fire-and-forget, so it lands a tick after the response.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(store.snapshot()['referrals/555121']?.status).toBe('QUALIFIED');
+    expect(store.snapshot()['users/555120']?.balanceKobo).toBe(10_000);
+    expect(store.snapshot()['users/555120']?.qualifiedReferralCount).toBe(1);
+  });
+
+  it('pays once, however many tasks the friend completes', async () => {
+    const referrer = await signInWithPin(555_130, '8351');
+    await request(app).get('/auth/session').set('authorization', `Bearer ${referrer.token}`);
+    seedHonourTask('one');
+    seedHonourTask('two');
+
+    const friend = await signIn(555_131, { startParam: referrer.user.referralCode });
+    const withPin = await request(app)
+      .post('/auth/pin')
+      .set('authorization', `Bearer ${friend.token}`)
+      .send({ pin: '4729', confirmPin: '4729' });
+    const friendToken = withPin.body.data.token as string;
+    await request(app).get('/auth/session').set('authorization', `Bearer ${friendToken}`);
+
+    for (const taskId of ['one', 'two']) {
+      await request(app)
+        .post(`/tasks/${taskId}/complete`)
+        .set('authorization', `Bearer ${friendToken}`)
+        .send({ dwellSeconds: 20 });
+      await new Promise((resolve) => setTimeout(resolve, 60));
     }
 
-    expect(store.snapshot()['users/555110']?.balanceKobo).toBe(10_000);
-    expect(store.snapshot()['users/555110']?.qualifiedReferralCount).toBe(1);
+    expect(store.snapshot()['users/555130']?.balanceKobo).toBe(10_000);
+    expect(store.snapshot()['users/555130']?.qualifiedReferralCount).toBe(1);
   });
 });
 
