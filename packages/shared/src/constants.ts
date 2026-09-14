@@ -286,6 +286,16 @@ export const ERROR_CODES = {
   DATABASE_SETUP_REQUIRED: 'DATABASE_SETUP_REQUIRED',
   /** The database rejected the server's credentials, or is unreachable. */
   DATABASE_UNAVAILABLE: 'DATABASE_UNAVAILABLE',
+  /**
+   * An admin has put the platform into maintenance mode.
+   *
+   * Its own code, not a FORBIDDEN or an INTERNAL, because the client has to
+   * treat it differently from every other failure: it is not a request that
+   * went wrong, it is the whole platform being closed, and the right response
+   * is to lock the screen rather than show a retryable error beside a
+   * dashboard that is no longer allowed to load.
+   */
+  MAINTENANCE: 'MAINTENANCE',
   INTERNAL: 'INTERNAL',
 } as const;
 
@@ -319,6 +329,9 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   PROVIDER_FAILED: 'We could not complete that right now. Nothing was deducted.',
   DATABASE_SETUP_REQUIRED: 'Fundxtra is finishing a one-time setup step. Please try again shortly.',
   DATABASE_UNAVAILABLE: 'Fundxtra cannot reach its database right now. Please try again shortly.',
+  // Overridden at the point of use with the message the admin typed in
+  // Settings, which is the one that can say how long and why.
+  MAINTENANCE: 'Fundxtra is being updated. Please check back shortly.',
   INTERNAL: 'Something went wrong. Please try again.',
 };
 

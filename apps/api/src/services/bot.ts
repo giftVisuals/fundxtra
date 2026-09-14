@@ -1,5 +1,6 @@
 import { BRAND, formatNaira, isTaskSlug, LIMITS, toSignupSource } from '@fundxtra/shared';
 import { getSettings } from './settings';
+import { isPrimaryAdmin } from './admins';
 import {
   answerCallbackQuery,
   editPhotoCaption,
@@ -88,7 +89,7 @@ function startMessage(
 ): string {
   const greeting = firstName ? `Hi ${firstName}! 👋` : 'Hi! 👋';
   const invited = referralCode
-    ? '\n\nYou were invited by a friend — open the app and they get credited once you set your PIN.'
+    ? '\n\nYou were invited by a friend — they get credited once you complete your first task and get paid for it.'
     : forTask
       ? '\n\nThis link opens a specific task. Tap below to see what it pays and what to do.'
       : '';
@@ -115,6 +116,27 @@ function helpMessage(supportHandle: string, minWithdrawal: string): string {
     '• <b>Rewards</b> — cash, airtime, data, Telegram Stars and Telegram Premium\n\n',
     'Rewards depend on the tasks sponsors are funding at the time, so there is no fixed or guaranteed amount.',
   ].join('');
+}
+
+/**
+ * What the bot says while the platform is locked down.
+ *
+ * No "open the app" button: during maintenance the app is a locked screen, and
+ * inviting someone to open something that is closed reads as a broken platform
+ * rather than a scheduled one. Support is the only useful door, so it is the
+ * only one offered.
+ */
+function maintenanceMessage(message: string): string {
+  return [
+    `<b>${BRAND.name} is closed for maintenance</b>\n\n`,
+    escape(message),
+    '\n\nYour balance is safe — nothing is lost while we are working. Message support if you need us.',
+  ].join('');
+}
+
+/** Telegram's HTML parse mode needs these three escaped, and only these. */
+function escape(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 /**
@@ -146,6 +168,24 @@ export async function handleBotUpdate(update: TelegramUpdate): Promise<void> {
   try {
     const settings = await getSettings();
     const supportHandle = settings.platform.supportHandle;
+
+    /*
+      A lockdown is a lockdown here too.
+
+      Maintenance mode closes the Mini App for everyone but an admin, so the
+      bot stops greeting people into it and says what is happening instead.
+      Checked against the owner's Telegram id alone, which costs nothing —
+      resolving every sender against the admins collection would be a read per
+      message, and the owner is who needs the bot working during an outage.
+    */
+    if (settings.platform.maintenanceMode && !isPrimaryAdmin(String(message.from.id))) {
+      await sendBotMessage(
+        chatId,
+        maintenanceMessage(settings.platform.maintenanceMessage),
+        supportButton(supportHandle),
+      );
+      return;
+    }
 
     if (command === '/start') {
       const payload = rest[0] && START_PAYLOAD_PATTERN.test(rest[0]) ? rest[0] : null;

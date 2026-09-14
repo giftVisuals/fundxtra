@@ -136,6 +136,13 @@ export function createApp(): Express {
   // header instead. See routes/telegram.ts.
   app.use('/telegram', telegramRouter);
 
+  /*
+    Authentication. Mounted before the gate because an admin has to be able to
+    sign in *during* a lockdown to lift it, and they cannot be recognised as an
+    admin until they have. The lockdown is applied inside the router instead,
+    where the caller's admin status is known: the handshake refuses a non-admin
+    outright, and GET /auth/session carries its own gate. See routes/auth.ts.
+  */
   app.use('/auth', authRouter);
 
   // Admin routes are mounted before the maintenance gate so operators can keep

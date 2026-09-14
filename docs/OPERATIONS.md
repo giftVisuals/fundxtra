@@ -128,6 +128,27 @@ best thing they can read.
 
 ---
 
+## If the owner closes the platform
+
+There is a **Maintenance mode** switch in Settings. It is the owner's switch,
+not yours — but you should know what it does, because users will ask.
+
+While it is on:
+
+- Every user sees one screen saying Fundxtra is being updated, with the
+  owner's message on it. No dashboard, no balance, no tasks.
+- Nobody can complete a task, submit a screenshot, or request a withdrawal.
+- The bot answers `/start` and everything else with the same message and a
+  support button. It does not offer to open the app.
+- **You keep working.** The admin console is not locked, so screenshots and
+  withdrawals can still be reviewed and paid during the outage.
+
+If a user messages you while it is on, the true answer is short: the platform
+is being updated, their balance is safe, nothing is lost, and tasks will be
+there when it reopens. Do not guess at a reopening time — ask the owner.
+
+---
+
 ## What to never do
 
 - **Never mark a withdrawal paid before the transfer has actually left.**

@@ -1,6 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { ERROR_CODES, hasPermission, type Permission } from '@fundxtra/shared';
-import { AppError, forbidden, unauthenticated } from '../lib/errors';
+import { AppError, forbidden, maintenance, unauthenticated } from '../lib/errors';
 import { bearerToken, verifySession } from '../lib/session';
 import { assertUsable, findUser, invalidateUser } from '../services/users';
 import { resolveAdmin, touchAdmin } from '../services/admins';
@@ -155,23 +155,27 @@ export const adminOnly: RequestHandler[] = [requireSession, loadUser, loadAdmin,
 
 /**
  * Block non-admin traffic during maintenance.
- * Admins keep working so they can fix whatever caused the maintenance.
+ *
+ * Maintenance mode is a full lockdown, not a banner: while it is on, a
+ * non-admin gets nothing from this API — no dashboard, no balance, no task
+ * list, no session at all. The one thing they do get is the reason, carried in
+ * the MAINTENANCE code and in whatever message the admin typed in Settings, so
+ * the app can lock its screen and say why instead of showing a broken
+ * dashboard full of failed panels.
+ *
+ * Admins keep working, because the lockdown is usually theirs to lift. That
+ * exemption depends on `req.admin`, so this handler is only correct where
+ * `loadAdmin` has already run: as the app-wide gate it sits after the admin
+ * router, and on a route it must be listed after `loadAdmin`.
  */
-export const maintenanceGate: RequestHandler = async (req, res, next) => {
+export const maintenanceGate: RequestHandler = async (req, _res, next) => {
   try {
     const settings = await getSettings();
     if (!settings.platform.maintenanceMode || req.admin) {
       next();
       return;
     }
-    res.status(503).json({
-      ok: false,
-      error: {
-        code: 'MAINTENANCE',
-        message: settings.platform.maintenanceMessage,
-        requestId: req.requestId,
-      },
-    });
+    next(maintenance(settings.platform.maintenanceMessage));
   } catch (error) {
     next(error);
   }

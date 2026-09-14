@@ -55,6 +55,7 @@ const DEFAULT_STATUS: Partial<Record<ErrorCode, number>> = {
   // own configuration or a dependency, and the caller is right to retry.
   DATABASE_SETUP_REQUIRED: 503,
   DATABASE_UNAVAILABLE: 503,
+  MAINTENANCE: 503,
   INTERNAL: 500,
 };
 
@@ -65,6 +66,16 @@ export const notFound = (what = 'that', detail?: string) =>
   new AppError(ERROR_CODES.NOT_FOUND, { message: `We could not find ${what}.`, detail });
 export const validationFailed = (fields: Record<string, string>, detail?: string) =>
   new AppError(ERROR_CODES.VALIDATION_FAILED, { fields, detail });
+/**
+ * The platform is closed for maintenance.
+ *
+ * The message is the one an admin typed in Settings, so it carries whatever
+ * they chose to tell people. 503 is the honest status: the service exists and
+ * the caller should come back.
+ */
+export const maintenance = (message: string, detail?: string) =>
+  new AppError(ERROR_CODES.MAINTENANCE, { message, detail });
+
 export const internal = (detail: string, cause?: unknown) =>
   new AppError(ERROR_CODES.INTERNAL, { detail, cause });
 

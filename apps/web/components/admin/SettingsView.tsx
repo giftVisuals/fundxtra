@@ -366,7 +366,8 @@ export function SettingsView() {
                     color: tokens.semantic.inkSubtle,
                   }}
                 >
-                  Blocks all non-admin traffic. Admins keep working.
+                  A full lockdown: users see a maintenance screen instead of the dashboard, the
+                  bot tells them the same, and nothing earns or pays out. Admins keep working.
                 </div>
               </div>
               <Toggle

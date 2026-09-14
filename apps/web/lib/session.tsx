@@ -12,7 +12,13 @@ import {
 } from 'react';
 import type { DashboardSummary, UserProfile } from '@fundxtra/shared';
 import { invalidateResources } from './resource';
-import { api, ApiError, setSessionToken, setUnauthenticatedHandler } from './api';
+import {
+  api,
+  ApiError,
+  setMaintenanceHandler,
+  setSessionToken,
+  setUnauthenticatedHandler,
+} from './api';
 import { initialiseTelegram, insideTelegram, rawInitData, startParam } from './telegram';
 
 /**
@@ -22,6 +28,7 @@ import { initialiseTelegram, insideTelegram, rawInitData, startParam } from './t
  *
  *   BOOTING     -> exchanging Telegram initData for a session
  *   OUTSIDE     -> not running inside Telegram; show the "open in Telegram" screen
+ *   MAINTENANCE -> an admin has closed the platform; nothing else may render
  *   NEEDS_PIN   -> first-time user must create a PIN
  *   LOCKED      -> returning user must enter their PIN
  *   READY       -> dashboard is loaded
@@ -36,6 +43,7 @@ import { initialiseTelegram, insideTelegram, rawInitData, startParam } from './t
 export type SessionState =
   | 'BOOTING'
   | 'OUTSIDE_TELEGRAM'
+  | 'MAINTENANCE'
   | 'NEEDS_PIN'
   | 'LOCKED'
   | 'READY'
@@ -115,10 +123,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [adminRole, setAdminRole] = useState<string | null>(null);
   const [pinLocked, setPinLocked] = useState(false);
   const [lockedUntil, setLockedUntil] = useState<string | null>(null);
-  const [error, setError] = useState<{ message: string; requestId?: string } | null>(null);
+  const [error, setError] = useState<SessionError | null>(null);
 
   /** Guards against two concurrent handshakes on a fast double mount. */
   const handshaking = useRef(false);
+
+  /**
+   * Turn a failure into a state.
+   *
+   * MAINTENANCE is not an error the user can retry past, so it gets its own
+   * state rather than the retry screen: the platform is closed, and the app
+   * has to say so and stop. Everything else stays retryable.
+   */
+  const failWith = useCallback((caught: unknown, fallback: string) => {
+    const failure = describeFailure(caught, fallback);
+    setError(failure);
+    setState(failure.code === 'MAINTENANCE' ? 'MAINTENANCE' : 'ERROR');
+  }, []);
 
   /**
    * Load the dashboard.
@@ -179,12 +200,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       // Has a PIN but this session is not yet PIN-verified.
       setState('LOCKED');
     } catch (caught) {
-      setState('ERROR');
-      setError(describeFailure(caught, 'We could not open Fundxtra.'));
+      failWith(caught, 'We could not open Fundxtra.');
     } finally {
       handshaking.current = false;
     }
-  }, []);
+  }, [failWith]);
 
   const completePinFlow = useCallback(
     async (token: string) => {
@@ -194,11 +214,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       try {
         await loadDashboard();
       } catch (caught) {
-        setState('ERROR');
-        setError(describeFailure(caught, 'We could not load your dashboard.'));
+        failWith(caught, 'We could not load your dashboard.');
       }
     },
-    [loadDashboard],
+    [loadDashboard, failWith],
   );
 
   const refresh = useCallback(async () => {
@@ -206,10 +225,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       await loadDashboard();
     } catch (caught) {
       // A refresh failure keeps the last good data on screen rather than
-      // blanking a working dashboard.
+      // blanking a working dashboard — except a lockdown, which is the one
+      // failure where the last good data is exactly what may not stay up.
+      if (caught instanceof ApiError && caught.isMaintenance) {
+        failWith(caught, 'Fundxtra is being updated.');
+        return;
+      }
       if (caught instanceof ApiError && caught.isAuthError) await authenticate();
     }
-  }, [loadDashboard, authenticate]);
+  }, [loadDashboard, authenticate, failWith]);
 
   const applyBalance = useCallback((balanceKobo: number) => {
     setUser((current) => (current ? { ...current, balanceKobo } : current));
@@ -220,6 +244,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     initialiseTelegram();
+    /*
+      A lockdown can begin mid-session. Whichever request notices it first
+      closes the whole app, so nobody is left looking at a dashboard whose
+      panels have all quietly failed.
+    */
+    setMaintenanceHandler((message) => {
+      setSessionToken(null);
+      invalidateResources();
+      setError({ message, code: 'MAINTENANCE', status: 503 });
+      setState('MAINTENANCE');
+    });
     setUnauthenticatedHandler(() => {
       setSessionToken(null);
       // Whoever signs in next must not be shown the last account's data.
@@ -228,7 +263,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       void authenticate();
     });
     void authenticate();
-    return () => setUnauthenticatedHandler(null);
+    return () => {
+      setUnauthenticatedHandler(null);
+      setMaintenanceHandler(null);
+    };
   }, [authenticate]);
 
   const value = useMemo<SessionContextValue>(

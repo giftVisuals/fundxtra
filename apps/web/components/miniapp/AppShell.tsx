@@ -77,6 +77,16 @@ export function AppShell() {
 
   if (session.state === 'OUTSIDE_TELEGRAM') return <OpenInTelegram />;
 
+  /*
+    The lockdown outranks every other state below, including the PIN gate.
+    Maintenance mode means the platform is closed, so there is no dashboard to
+    unlock and no reason to ask anyone for their PIN — this screen is the whole
+    app until an admin turns it off.
+  */
+  if (session.state === 'MAINTENANCE') {
+    return <MaintenanceLock message={session.error?.message ?? null} />;
+  }
+
   if (session.state === 'ERROR') {
     return (
       <CentredMessage>
@@ -230,6 +240,65 @@ function OpenInTelegram() {
           >
             Learn about Fundxtra
           </Link>
+        </div>
+      </div>
+    </CentredMessage>
+  );
+}
+
+/**
+ * The maintenance lockdown.
+ *
+ * A full screen, not a banner over a working app. When an admin closes the
+ * platform the server stops answering for non-admins entirely, so a dashboard
+ * drawn here would be a shell of failed panels and a balance that might be
+ * mid-migration. One screen, the admin's own message, and the two things
+ * anybody actually wants: reassurance about their money, and a way to reach a
+ * human.
+ */
+function MaintenanceLock({ message }: { message: string | null }) {
+  const session = useSession();
+
+  return (
+    <CentredMessage>
+      <div style={{ textAlign: 'center' }}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/brand/fundxtra-mark.png"
+          alt="Fundxtra"
+          width={56}
+          height={46}
+          style={{ margin: '0 auto 24px' }}
+        />
+        <h1 style={{ fontSize: tokens.typography.size.xl }}>Fundxtra is being updated</h1>
+        <p
+          style={{
+            marginTop: 10,
+            fontSize: tokens.typography.size.base,
+            lineHeight: tokens.typography.leading.relaxed,
+            color: tokens.semantic.inkMuted,
+          }}
+        >
+          {message ?? 'We are carrying out maintenance. Please check back shortly.'}
+        </p>
+        <p
+          style={{
+            marginTop: 14,
+            fontSize: tokens.typography.size.sm,
+            lineHeight: tokens.typography.leading.relaxed,
+            color: tokens.semantic.inkSubtle,
+          }}
+        >
+          Your balance and everything you have earned are safe. Nothing is lost while we work, and
+          tasks will be waiting when we reopen.
+        </p>
+        <div style={{ display: 'grid', gap: 10, marginTop: 28 }}>
+          <Button size="lg" fullWidth onClick={() => void session.reauthenticate()}>
+            Check again
+          </Button>
+          <Button variant="secondary" fullWidth onClick={() => openExternal(supportUrl)}>
+            Contact Fundxtra Support
+          </Button>
         </div>
       </div>
     </CentredMessage>

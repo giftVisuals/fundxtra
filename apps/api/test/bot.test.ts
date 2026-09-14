@@ -71,6 +71,7 @@ vi.mock('../src/services/completions', () => ({
 }));
 
 const { createApp } = await import('../src/app');
+const { invalidateSettingsCache } = await import('../src/services/settings');
 const app = createApp();
 
 /** The secret the route expects, derived exactly as the server derives it. */
@@ -316,5 +317,85 @@ describe('review buttons in Telegram', () => {
       .send(tap('something:else:entirely', 6_438_544_386));
 
     expect(decided).toHaveLength(0);
+  });
+});
+
+/** Flip maintenance mode, the way an admin does from Settings. */
+function setMaintenance(on: boolean, message?: string) {
+  store.commit([
+    {
+      kind: 'merge',
+      path: 'systemSettings/global',
+      data: {
+        platform: { maintenanceMode: on, ...(message ? { maintenanceMessage: message } : {}) },
+      },
+    },
+  ]);
+  invalidateSettingsCache();
+}
+
+/**
+ * The bot during a lockdown.
+ *
+ * The app is closed to users, so the bot must stop inviting them into it. A
+ * button that opens a locked screen makes a planned outage look like a broken
+ * platform, and it is the bot — not the app — that most people will reach
+ * first while the app is down.
+ */
+describe('maintenance lockdown', () => {
+  it('tells a user the platform is closed, with no button into it', async () => {
+    setMaintenance(true, 'Upgrading the wallet. Back by 6pm.');
+    try {
+      await post(startUpdate('/start'));
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.text).toContain('closed for maintenance');
+      expect(sent[0]?.text).toContain('Upgrading the wallet. Back by 6pm.');
+      expect(sent[0]?.text).toContain('balance is safe');
+      // Support, and nothing that opens the app.
+      const markup = JSON.stringify(sent[0]?.markup);
+      expect(markup).not.toContain('web_app');
+      expect(markup).toContain('t.me/');
+    } finally {
+      setMaintenance(false);
+    }
+  });
+
+  it('says the same to every other command, not just /start', async () => {
+    setMaintenance(true);
+    try {
+      await post(startUpdate('/help'));
+      await post(startUpdate('when will you be back?'));
+
+      expect(sent).toHaveLength(2);
+      for (const message of sent) {
+        expect(message.text).toContain('closed for maintenance');
+        expect(JSON.stringify(message.markup)).not.toContain('web_app');
+      }
+    } finally {
+      setMaintenance(false);
+    }
+  });
+
+  it('keeps answering the owner normally, so they can check their own app', async () => {
+    setMaintenance(true);
+    try {
+      await post(startUpdate('/start', 6_438_544_386));
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.text).not.toContain('closed for maintenance');
+      expect(JSON.stringify(sent[0]?.markup)).toContain('web_app');
+    } finally {
+      setMaintenance(false);
+    }
+  });
+
+  it('is back to normal the moment the switch goes off', async () => {
+    setMaintenance(true);
+    setMaintenance(false);
+
+    await post(startUpdate('/start'));
+    expect(sent[0]?.text).not.toContain('closed for maintenance');
+    expect(JSON.stringify(sent[0]?.markup)).toContain('web_app');
   });
 });

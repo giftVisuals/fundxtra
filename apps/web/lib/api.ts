@@ -38,11 +38,18 @@ export class ApiError extends Error {
   get needsPin(): boolean {
     return this.code === 'PIN_REQUIRED';
   }
+
+  /** The platform is closed for maintenance; the whole app must lock down. */
+  get isMaintenance(): boolean {
+    return this.code === 'MAINTENANCE';
+  }
 }
 
 let sessionToken: string | null = null;
 /** Invoked when the server rejects the session, so the app can re-authenticate. */
 let onUnauthenticated: (() => void) | null = null;
+/** Invoked when the server reports a lockdown, so the app can close itself. */
+let onMaintenance: ((message: string) => void) | null = null;
 
 export function setSessionToken(token: string | null): void {
   sessionToken = token;
@@ -54,6 +61,18 @@ export function getSessionToken(): string | null {
 
 export function setUnauthenticatedHandler(handler: (() => void) | null): void {
   onUnauthenticated = handler;
+}
+
+/**
+ * Register what happens when any request comes back MAINTENANCE.
+ *
+ * It is global because a lockdown is global: an admin can flip the switch
+ * while someone is mid-scroll, and the next request they make must close the
+ * whole app rather than draw one failed panel inside a dashboard that is no
+ * longer allowed to exist.
+ */
+export function setMaintenanceHandler(handler: ((message: string) => void) | null): void {
+  onMaintenance = handler;
 }
 
 export interface RequestOptions {
@@ -132,6 +151,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     // 401 means the session is gone; let the app re-run the Telegram handshake
     // rather than showing an error the user cannot act on.
     if (apiError.isAuthError) onUnauthenticated?.();
+    if (apiError.isMaintenance) onMaintenance?.(apiError.message);
     throw apiError;
   }
 

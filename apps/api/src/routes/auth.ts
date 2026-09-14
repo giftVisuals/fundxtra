@@ -8,12 +8,12 @@ import {
   type UserProfile,
 } from '@fundxtra/shared';
 import { env, hasTelegram } from '../config/env';
-import { unauthenticated } from '../lib/errors';
+import { maintenance, unauthenticated } from '../lib/errors';
 import { newUuid } from '../lib/ids';
 import { issueSession } from '../lib/session';
 import { verifyInitData, type TelegramUser } from '../lib/telegram-auth';
 import { RATE_LIMITS } from '../lib/rate-limit';
-import { authenticated, loadAdmin, requireSession } from '../middleware/auth';
+import { authenticated, loadAdmin, maintenanceGate, requireSession } from '../middleware/auth';
 import { rateLimit } from '../middleware/rate-limit';
 import { ok } from '../middleware/respond';
 import { parsed, validateBody } from '../middleware/validate';
@@ -64,6 +64,27 @@ authRouter.post(
       const telegramUser = await authenticateTelegram(input.initData, req.clientIp, input.startParam);
 
       /*
+        Maintenance is checked here, before a single row is written.
+
+        Maintenance mode means the platform is closed, and closed has to mean
+        closed: no account is created, no session is issued, and no balance is
+        read for anyone but an admin. Doing it any later would leave a
+        non-admin holding a token and a profile during a lockdown, which is
+        exactly the half-open state that showed people a dashboard while every
+        panel on it failed.
+
+        Admins pass, because the lockdown is usually theirs to lift. Resolving
+        them costs one read, and only while maintenance is on.
+      */
+      const settings = await getSettings();
+      const operator = settings.platform.maintenanceMode
+        ? await resolveAdmin(String(telegramUser.user.id), telegramUser.user.username ?? null)
+        : null;
+      if (settings.platform.maintenanceMode && !operator) {
+        throw maintenance(settings.platform.maintenanceMessage);
+      }
+
+      /*
         One `?start=` payload, two possible meanings.
 
         A reserved word like `website` names the channel the person arrived
@@ -82,9 +103,8 @@ authRouter.post(
         await attributeReferral(user, startPayload);
       }
 
-      const settings = await getSettings();
       const pinStatus = await getPinStatus(user.id);
-      const admin = await resolveAdmin(user.telegramId, user.username);
+      const admin = operator ?? (await resolveAdmin(user.telegramId, user.username));
 
       // The session is issued un-PIN-verified. Nothing that moves money is
       // reachable until POST /auth/pin/verify upgrades it.
@@ -266,7 +286,7 @@ authRouter.post(
  * so `qualifyReferral` runs once — and even if it did not, the ledger's
  * idempotency key would refuse a second ₦100.
  */
-authRouter.get('/session', ...authenticated, loadAdmin, async (req, res, next) => {
+authRouter.get('/session', ...authenticated, loadAdmin, maintenanceGate, async (req, res, next) => {
   try {
     const sessionUser = req.user!;
 

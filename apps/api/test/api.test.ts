@@ -37,6 +37,7 @@ vi.mock('../src/lib/telegram-bot', () => ({
 
 const { createApp } = await import('../src/app');
 const { signInitData } = await import('../src/lib/telegram-auth');
+const { invalidateSettingsCache } = await import('../src/services/settings');
 
 let app: ReturnType<typeof createApp>;
 
@@ -48,7 +49,26 @@ beforeEach(() => {
   for (const path of Object.keys(store.snapshot())) {
     store.commit([{ kind: 'delete', path, data: {} }]);
   }
+  // Settings are cached for 15 seconds, which is longer than the whole suite.
+  invalidateSettingsCache();
 });
+
+/** Flip maintenance mode, the way an admin does from Settings. */
+function setMaintenance(on: boolean, message?: string) {
+  store.commit([
+    {
+      kind: 'merge',
+      path: 'systemSettings/global',
+      data: {
+        platform: {
+          maintenanceMode: on,
+          ...(message ? { maintenanceMessage: message } : {}),
+        },
+      },
+    },
+  ]);
+  invalidateSettingsCache();
+}
 
 function initDataFor(id: number, firstName = 'Gift', username?: string, startParam?: string) {
   const fields: Record<string, string> = {
@@ -274,6 +294,105 @@ describe('referral qualification over HTTP', () => {
 
     expect(store.snapshot()['users/555130']?.balanceKobo).toBe(10_000);
     expect(store.snapshot()['users/555130']?.qualifiedReferralCount).toBe(1);
+  });
+});
+
+/**
+ * Maintenance mode.
+ *
+ * The switch has to mean the platform is closed, not that a banner appears
+ * over a working one. What was shipped first did the opposite: the handshake
+ * and the dashboard were mounted ahead of the gate, so a user still signed in
+ * and still saw their balance while every panel behind it failed. These pin
+ * the lockdown down at the two doors that matter, and pin the admin's way in
+ * open — because an outage that also locks out the person who can lift it is
+ * an outage nobody can end.
+ */
+describe('maintenance lockdown', () => {
+  it('refuses the handshake for a user, and creates no account', async () => {
+    setMaintenance(true, 'Back at 6pm. Your balance is safe.');
+
+    const response = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(556_001, 'Gift') });
+
+    expect(response.status).toBe(503);
+    expect(response.body.error.code).toBe('MAINTENANCE');
+    // The admin's own words reach the user, not generic copy.
+    expect(response.body.error.message).toBe('Back at 6pm. Your balance is safe.');
+    expect(response.body.error.requestId).toBeTruthy();
+    // No token, and nothing written: a closed platform does not open accounts.
+    expect(response.body.data).toBeUndefined();
+    expect(store.snapshot()['users/556001']).toBeUndefined();
+
+    setMaintenance(false);
+  });
+
+  it('refuses the dashboard to a user who signed in before the lockdown', async () => {
+    // Signed in and unlocked while the platform was open.
+    const user = await signInWithPin(556_002);
+    expect((await request(app).get('/auth/session').set('authorization', `Bearer ${user.token}`)).status).toBe(200);
+
+    setMaintenance(true);
+
+    const dashboard = await request(app)
+      .get('/auth/session')
+      .set('authorization', `Bearer ${user.token}`);
+
+    expect(dashboard.status).toBe(503);
+    expect(dashboard.body.error.code).toBe('MAINTENANCE');
+    // Not one field of the dashboard leaves the server.
+    expect(dashboard.body.data).toBeUndefined();
+
+    // And neither does anything else they could reach with that token.
+    for (const route of ['/tasks', '/wallet/summary', '/referrals']) {
+      const blocked = await request(app).get(route).set('authorization', `Bearer ${user.token}`);
+      expect(blocked.status, route).toBe(503);
+      expect(blocked.body.error.code, route).toBe('MAINTENANCE');
+    }
+
+    setMaintenance(false);
+  });
+
+  it('still lets an admin sign in and load their dashboard', async () => {
+    setMaintenance(true);
+
+    const response = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(6_438_544_386, 'Gift', 'giftvisuals') });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.isAdmin).toBe(true);
+
+    const session = await request(app)
+      .get('/auth/session')
+      .set('authorization', `Bearer ${response.body.data.token}`);
+    expect(session.status).toBe(200);
+    expect(session.body.data.isAdmin).toBe(true);
+
+    setMaintenance(false);
+  });
+
+  it('leaves the admin console reachable so the lockdown can be lifted', async () => {
+    const admin = await signInWithPin(6_438_544_386, '8351', { username: 'giftvisuals' });
+    setMaintenance(true);
+
+    const dashboard = await request(app)
+      .get('/admin/dashboard')
+      .set('authorization', `Bearer ${admin.token}`);
+    expect(dashboard.status).toBe(200);
+
+    // The switch itself is reachable, which is the whole point.
+    const lifted = await request(app)
+      .patch('/admin/settings')
+      .set('authorization', `Bearer ${admin.token}`)
+      .send({ platform: { maintenanceMode: false } });
+    expect(lifted.status).toBe(200);
+
+    const user = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(556_003, 'Gift') });
+    expect(user.status).toBe(200);
   });
 });
 
