@@ -28,8 +28,19 @@ vi.mock('../src/lib/firebase', async () => {
   return { ...actual, db: () => store, firestoreAvailable: true, bucket: () => ({}) };
 });
 
+/**
+ * What Telegram says about channel membership. Tests set this.
+ *
+ * 'JOINED' by default, so the channel gate is transparent to every test that
+ * is not about it — which is what production looks like for a real member.
+ */
+let membership: { state: string; status?: string; adminMessage?: string } = {
+  state: 'JOINED',
+  status: 'member',
+};
+
 vi.mock('../src/lib/telegram-bot', () => ({
-  checkChatMembership: async () => ({ state: 'JOINED', status: 'member' }),
+  checkChatMembership: async () => membership,
   probeChatAccess: async () => ({ ok: true, title: 'Fundxtra Channel', warning: null }),
   notifyUser: async () => true,
   getBotIdentity: async () => null,
@@ -38,6 +49,9 @@ vi.mock('../src/lib/telegram-bot', () => ({
 const { createApp } = await import('../src/app');
 const { signInitData } = await import('../src/lib/telegram-auth');
 const { invalidateSettingsCache } = await import('../src/services/settings');
+const { clearChannelCache } = await import('../src/services/channel');
+const { clearAdminCache } = await import('../src/services/admins');
+const { rateLimiter } = await import('../src/lib/rate-limit');
 
 let app: ReturnType<typeof createApp>;
 
@@ -51,6 +65,13 @@ beforeEach(() => {
   }
   // Settings are cached for 15 seconds, which is longer than the whole suite.
   invalidateSettingsCache();
+  // Memberships and admin lookups are cached too, and both outlive a test.
+  clearChannelCache();
+  clearAdminCache();
+  membership = { state: 'JOINED', status: 'member' };
+  // Every test signs in, and the whole suite shares one IP: without this the
+  // later tests fail on the sign-in rate limit rather than on their subject.
+  rateLimiter.resetAll();
 });
 
 /** Flip maintenance mode, the way an admin does from Settings. */
@@ -373,6 +394,46 @@ describe('maintenance lockdown', () => {
     setMaintenance(false);
   });
 
+  it('does not lock the admin out of the app itself', async () => {
+    /*
+      The regression this exists for: the gate in front of /tasks, /wallet and
+      /referrals runs before those routers resolve a session, so it could not
+      see `req.admin` and refused everybody — the owner included. The dashboard
+      let them in and then every panel behind it was refused, which read as
+      "maintenance mode locks the admin out".
+    */
+    const admin = await signInWithPin(6_438_544_386, '8351', { username: 'giftvisuals' });
+    setMaintenance(true);
+    try {
+      for (const route of ['/tasks', '/wallet', '/referrals', '/announcements']) {
+        const response = await request(app).get(route).set('authorization', `Bearer ${admin.token}`);
+        expect(response.status, route).toBe(200);
+      }
+    } finally {
+      setMaintenance(false);
+    }
+  });
+
+  it('locks out a moderator’s users but not the moderator', async () => {
+    const owner = await signInWithPin(6_438_544_386, '8351', { username: 'giftvisuals' });
+    await request(app)
+      .post('/admin/admins')
+      .set('authorization', `Bearer ${owner.token}`)
+      .send({ telegramId: '556100', displayName: 'Ops', role: 'ADMIN', extraPermissions: [] });
+
+    const mod = await signInWithPin(556_100, '4729', { username: 'ops' });
+    const user = await signInWithPin(556_101);
+    setMaintenance(true);
+    try {
+      // A mod is an admin: the gate must recognise them from their token too,
+      // not only the owner whose id is a constant.
+      expect((await request(app).get('/tasks').set('authorization', `Bearer ${mod.token}`)).status).toBe(200);
+      expect((await request(app).get('/tasks').set('authorization', `Bearer ${user.token}`)).status).toBe(503);
+    } finally {
+      setMaintenance(false);
+    }
+  });
+
   it('leaves the admin console reachable so the lockdown can be lifted', async () => {
     const admin = await signInWithPin(6_438_544_386, '8351', { username: 'giftvisuals' });
     setMaintenance(true);
@@ -393,6 +454,154 @@ describe('maintenance lockdown', () => {
       .post('/auth/telegram')
       .send({ initData: initDataFor(556_003, 'Gift') });
     expect(user.status).toBe(200);
+  });
+});
+
+/**
+ * The channel gate.
+ *
+ * Membership of the Fundxtra channel is a condition of using the platform, so
+ * the tests that matter most are the ones that keep it from becoming a way to
+ * lose users: it must never block on our own failure to ask, it must let
+ * someone in the instant they join, and it must not cost the referrer who
+ * brought them the reward they earned.
+ */
+describe('channel gate', () => {
+  it('issues no session to someone who has not joined', async () => {
+    membership = { state: 'NOT_JOINED', status: 'left' };
+
+    const response = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(557_001, 'Gift') });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.needsChannel).toBe(true);
+    expect(response.body.data.channel.handle).toBe('@fundxtra');
+    expect(response.body.data.channel.url).toBe('https://t.me/fundxtra');
+    // The point of the gate: nothing to log in with.
+    expect(response.body.data.token).toBeUndefined();
+    // Brand new, so the copy asks them to join rather than to come back.
+    expect(response.body.data.returning).toBe(false);
+  });
+
+  it('still records the referral that brought them, so nobody loses it', async () => {
+    const referrer = await signInWithPin(557_100);
+    membership = { state: 'NOT_JOINED', status: 'left' };
+
+    const blocked = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(557_101, 'Friend', undefined, referrer.user.referralCode) });
+    expect(blocked.body.data.needsChannel).toBe(true);
+
+    // The account exists and the attribution is recorded, even though they
+    // were not let in. Stepping out to tap Join must not cost the referrer.
+    expect(store.snapshot()['users/557101']?.referredBy).toBe(referrer.user.id);
+  });
+
+  it('lets them in the moment they join, with no stale refusal', async () => {
+    membership = { state: 'NOT_JOINED', status: 'left' };
+    const blocked = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(557_002, 'Gift') });
+    expect(blocked.body.data.needsChannel).toBe(true);
+
+    // They tap Join and come straight back. No TTL may stand in the way.
+    membership = { state: 'JOINED', status: 'member' };
+    const retry = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(557_002, 'Gift') });
+
+    expect(retry.body.data.needsChannel).toBe(false);
+    expect(retry.body.data.token).toBeTruthy();
+    expect(retry.body.data.channel.handle).toBe('@fundxtra');
+  });
+
+  it('blocks earning and the wallet for someone who leaves mid-session', async () => {
+    const user = await signInWithPin(557_003);
+    expect((await request(app).get('/tasks').set('authorization', `Bearer ${user.token}`)).status).toBe(200);
+
+    membership = { state: 'NOT_JOINED', status: 'left' };
+    clearChannelCache();
+
+    for (const route of ['/tasks', '/wallet', '/referrals', '/auth/session']) {
+      const response = await request(app).get(route).set('authorization', `Bearer ${user.token}`);
+      expect(response.status, route).toBe(403);
+      expect(response.body.error.code, route).toBe('CHANNEL_REQUIRED');
+    }
+  });
+
+  it('lets everyone through when Telegram cannot answer', async () => {
+    /*
+      The bot demoted, the channel renamed, Telegram down. A gate that read
+      this as "not a member" would shut the whole platform out of itself, so
+      the unanswerable case is explicitly not a block.
+    */
+    membership = { state: 'CONFIGURATION_ERROR', adminMessage: 'bot is not an administrator' };
+
+    const response = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(557_004, 'Gift') });
+    expect(response.body.data.needsChannel).toBe(false);
+    expect(response.body.data.token).toBeTruthy();
+
+    membership = { state: 'UNAVAILABLE', adminMessage: 'Bad Gateway' };
+    const later = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(557_005, 'Gift') });
+    expect(later.body.data.token).toBeTruthy();
+  });
+
+  it('never blocks an admin', async () => {
+    membership = { state: 'NOT_JOINED', status: 'left' };
+
+    const auth = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(6_438_544_386, 'Gift', 'giftvisuals') });
+    expect(auth.body.data.needsChannel).toBe(false);
+
+    const token = auth.body.data.token as string;
+    for (const route of ['/tasks', '/wallet', '/auth/session']) {
+      const response = await request(app).get(route).set('authorization', `Bearer ${token}`);
+      expect(response.status, route).toBe(200);
+    }
+  });
+
+  it('stops gating when an admin turns the requirement off', async () => {
+    const owner = await signInWithPin(6_438_544_386, '8351', { username: 'giftvisuals' });
+    membership = { state: 'NOT_JOINED', status: 'left' };
+
+    const blocked = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(557_006, 'Gift') });
+    expect(blocked.body.data.needsChannel).toBe(true);
+
+    const patched = await request(app)
+      .patch('/admin/settings')
+      .set('authorization', `Bearer ${owner.token}`)
+      .send({ platform: { requireChannelJoin: false } });
+    expect(patched.status).toBe(200);
+
+    const allowed = await request(app)
+      .post('/auth/telegram')
+      .send({ initData: initDataFor(557_006, 'Gift') });
+    expect(allowed.body.data.token).toBeTruthy();
+    // The invite still travels, so the dashboard can still promote the channel.
+    expect(allowed.body.data.channel.required).toBe(false);
+  });
+
+  it('costs no database reads for a member', async () => {
+    const user = await signInWithPin(557_007);
+    clearChannelCache();
+    store.resetMetrics();
+
+    await request(app).get('/wallet').set('authorization', `Bearer ${user.token}`);
+
+    /*
+      One read: the user document every authenticated request makes. The gate
+      itself asks Telegram, not Firestore, and caches the yes — so putting it
+      in front of the whole platform did not put a read in front of it.
+    */
+    expect(store.metrics.reads).toBe(1);
   });
 });
 

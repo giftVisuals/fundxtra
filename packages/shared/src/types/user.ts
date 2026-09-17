@@ -89,6 +89,21 @@ export interface UserProfile {
   createdAt: IsoDate;
 }
 
+/**
+ * The Telegram channel Fundxtra points users at.
+ *
+ * `required` is the difference between a promotion and a gate: when it is
+ * true, a user who is not a member cannot sign in or earn, and the app shows
+ * them the way in instead of a dashboard.
+ */
+export interface ChannelInvite {
+  /** '@fundxtra', or a numeric id for a private chat. */
+  handle: string;
+  /** Where to send someone to join. */
+  url: string;
+  required: boolean;
+}
+
 export interface DashboardSummary {
   user: UserProfile;
   /**
@@ -107,4 +122,6 @@ export interface DashboardSummary {
   pendingSubmissionCount: number;
   withdrawalsOpen: boolean;
   withdrawalNotice: string | null;
+  /** Null when no channel is configured. */
+  channel: ChannelInvite | null;
 }

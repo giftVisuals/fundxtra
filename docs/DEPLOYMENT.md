@@ -72,8 +72,17 @@ From [@BotFather](https://t.me/botfather):
 1. `/newbot` (or use the existing Fundxtra bot) → copy the token into
    `TELEGRAM_BOT_TOKEN`. This token is what verifies Mini App signatures —
    without it the API cannot authenticate anyone. Treat it like a password.
-2. `/setmenubutton` → point it at `https://fundxtra.name.ng/app`.
-3. `/setdomain` → `fundxtra.name.ng`.
+2. `/setmenubutton` → point it at `https://fundxtra.vercel.app/app`.
+3. `/setdomain` → `fundxtra.vercel.app`.
+
+**The bot must be an administrator of the Fundxtra channel** (Settings →
+Platform → Channel, `@fundxtra` by default). That is the only way Telegram
+will answer `getChatMember`, which is what the join requirement is enforced
+with. If the bot is removed or demoted, membership stops being verifiable and
+**every user is let through unchecked** rather than locked out — deliberately,
+since the alternative is shutting the whole platform out of itself. The API
+logs an error on every such check; it is not silent, but it is not visible to
+users either.
 
 For each campaign that uses automatic membership verification, **add the bot to
 the target channel or group and promote it to administrator.** Without
@@ -114,7 +123,7 @@ Railway → your service → **Variables**. Everything below is described in
 ```
 NODE_ENV=production
 LOG_LEVEL=info
-CORS_ORIGINS=https://fundxtra.name.ng,https://fundxtra.vercel.app
+CORS_ORIGINS=https://fundxtra.vercel.app
 SESSION_SECRET=            # openssl rand -base64 48
 TELEGRAM_BOT_TOKEN=        # from @BotFather
 TELEGRAM_BOT_USERNAME=fundxtrabot
@@ -241,14 +250,19 @@ dependency has been removed.
 
 ### Custom domain
 
-Vercel → **Settings** → **Domains** → add `fundxtra.name.ng`, then point the
-DNS records Vercel shows you at it. Vercel provisions HTTPS automatically.
+No custom domain is connected: the site serves from `fundxtra.vercel.app`,
+and every link, receipt and canonical URL uses it. Nothing is waiting on a
+domain.
 
-Then, in order:
+If one is bought later: Vercel → **Settings** → **Domains** → add it, then
+point the DNS records Vercel shows you at it. Vercel provisions HTTPS
+automatically. Then, in order:
 
-1. Add `https://fundxtra.name.ng` to `CORS_ORIGINS` on Railway.
-2. Set `NEXT_PUBLIC_SITE_URL=https://fundxtra.name.ng`.
+1. Add the new origin to `CORS_ORIGINS` on Railway.
+2. Set `NEXT_PUBLIC_SITE_URL` on Vercel and `PUBLIC_WEB_URL` on Railway.
 3. Update the bot's menu button and `/setdomain` in BotFather.
+
+Do all three, or the Mini App will load and then fail to authenticate.
 
 The Mini App is framed by Telegram, so `vercel.json` sets a
 `frame-ancestors` CSP that permits Telegram's clients rather than

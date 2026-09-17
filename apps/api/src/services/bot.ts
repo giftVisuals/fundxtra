@@ -1,6 +1,14 @@
-import { BRAND, formatNaira, isTaskSlug, LIMITS, toSignupSource } from '@fundxtra/shared';
+import {
+  BRAND,
+  formatNaira,
+  isTaskSlug,
+  LIMITS,
+  toSignupSource,
+  type ChannelInvite,
+} from '@fundxtra/shared';
 import { getSettings } from './settings';
 import { isPrimaryAdmin } from './admins';
+import { channelInvite, channelMembership } from './channel';
 import {
   answerCallbackQuery,
   editPhotoCaption,
@@ -10,6 +18,7 @@ import {
 import { logger } from '../lib/logger';
 import { env, miniAppUrl } from '../config/env';
 import { reviewSubmission } from './completions';
+import { findUser } from './users';
 
 /**
  * The bot conversation.
@@ -59,6 +68,22 @@ function openButton(label: string, url: string): ReplyMarkup {
   return { inline_keyboard: [[{ text: label, web_app: { url } }]] };
 }
 
+/**
+ * Join the channel, then open the app.
+ *
+ * Two rows in that order because that is the order the user has to do them
+ * in: the app will not let a non-member past its front screen, so offering
+ * "Open" first would send them to a door they cannot walk through.
+ */
+function joinButtons(channelUrl: string, openLabel: string, openUrl: string): ReplyMarkup {
+  return {
+    inline_keyboard: [
+      [{ text: 'Join the Fundxtra channel', url: channelUrl }],
+      [{ text: openLabel, web_app: { url: openUrl } }],
+    ],
+  };
+}
+
 function supportButton(supportHandle: string): ReplyMarkup {
   return {
     inline_keyboard: [
@@ -86,6 +111,7 @@ function startMessage(
   firstName: string | undefined,
   referralCode: string | null,
   forTask = false,
+  channelRequired = false,
 ): string {
   const greeting = firstName ? `Hi ${firstName}! 👋` : 'Hi! 👋';
   const invited = referralCode
@@ -102,19 +128,58 @@ function startMessage(
     '\n• Complete sponsored tasks and earn Naira rewards',
     `\n• Invite friends and earn ${formatNaira(LIMITS.REFERRAL_REWARD_KOBO)} per friend who joins and earns their first reward`,
     '\n• Withdraw as cash, or redeem airtime, data, Telegram Stars or Premium',
+    channelNote(channelRequired),
     '\n\nTap below to open the app and set your 4-digit PIN.',
   ].join('');
 }
 
-function helpMessage(supportHandle: string, minWithdrawal: string): string {
+/** One line about the channel, in the greeting, whether or not it is enforced. */
+function channelNote(required: boolean): string {
+  return required
+    ? '\n\n<b>You must join our Telegram channel to use Fundxtra.</b> Tap the button below to join first — it takes a second, and it is where new tasks and payout news are posted.'
+    : '\n\nJoin our Telegram channel for new tasks and payout news.';
+}
+
+/**
+ * What the bot says to someone who has not joined the channel.
+ *
+ * Friendly, and specific about what happens next. Someone who has earned
+ * before and left is asked to come back rather than told they are locked out:
+ * their balance has not moved and saying so first is the truthful thing as
+ * well as the kind one.
+ */
+function joinFirstMessage(firstName: string | undefined, returning: boolean): string {
+  const greeting = firstName ? `Hi ${firstName}! 👋` : 'Hi! 👋';
+  return [
+    `${greeting}\n\n`,
+    returning
+      ? `<b>Join the ${BRAND.name} channel to continue</b>\n\n`
+      : `<b>One step before you start</b>\n\n`,
+    returning
+      ? 'It looks like you are no longer in our Telegram channel, so earning is paused. Your balance and everything you have earned are safe and waiting — join back and it all continues where it left off.'
+      : `Everyone on ${BRAND.name} is a member of our Telegram channel. It is where new tasks, payout news and announcements are posted.`,
+    '\n\nTap <b>Join the Fundxtra channel</b> below, then come back and open the app.',
+  ].join('');
+}
+
+function helpMessage(
+  supportHandle: string,
+  minWithdrawal: string,
+  invite: ChannelInvite | null,
+): string {
   return [
     `<b>${BRAND.name} help</b>\n\n`,
     '• <b>Open the app</b> — use the button below or the menu button beside the message box\n',
     '• <b>Your PIN</b> — 4 digits, set on first open, and needed for anything that moves money\n',
     `• <b>Forgot your PIN?</b> Contact Fundxtra Support at ${supportHandle}\n`,
     `• <b>Withdrawals</b> — from ${minWithdrawal}, when the withdrawal portal is open\n`,
-    '• <b>Rewards</b> — cash, airtime, data, Telegram Stars and Telegram Premium\n\n',
-    'Rewards depend on the tasks sponsors are funding at the time, so there is no fixed or guaranteed amount.',
+    '• <b>Rewards</b> — cash, airtime, data, Telegram Stars and Telegram Premium\n',
+    invite?.required
+      ? `• <b>Our channel</b> — membership of ${invite.handle} is required to use ${BRAND.name}\n`
+      : invite
+        ? `• <b>Our channel</b> — ${invite.handle} for new tasks and payout news\n`
+        : '',
+    '\nRewards depend on the tasks sponsors are funding at the time, so there is no fixed or guaranteed amount.',
   ].join('');
 }
 
@@ -187,6 +252,33 @@ export async function handleBotUpdate(update: TelegramUpdate): Promise<void> {
       return;
     }
 
+    /*
+      Channel membership, for everything the bot answers.
+
+      The app will not let a non-member past its front screen, so the bot must
+      not pretend otherwise. One `getChatMember` call per message, and members
+      are cached for a few minutes, so a conversation does not re-ask Telegram
+      on every line. A check that cannot be answered lets the person through —
+      see services/channel.ts.
+
+      The owner is exempt on their id alone, which costs nothing and keeps the
+      bot working for them if the channel is ever misconfigured.
+    */
+    const invite = channelInvite(settings);
+    const gated = Boolean(invite?.required) && !isPrimaryAdmin(String(message.from.id));
+    if (invite && gated) {
+      const state = await channelMembership(String(message.from.id), invite.handle);
+      if (state === 'MISSING') {
+        const user = await findUser(String(message.from.id));
+        await sendBotMessage(
+          chatId,
+          joinFirstMessage(message.from.first_name, Boolean(user?.hasPin)),
+          joinButtons(invite.url, `Open ${BRAND.name}`, miniAppUrl()),
+        );
+        return;
+      }
+    }
+
     if (command === '/start') {
       const payload = rest[0] && START_PAYLOAD_PATTERN.test(rest[0]) ? rest[0] : null;
 
@@ -213,10 +305,18 @@ export async function handleBotUpdate(update: TelegramUpdate): Promise<void> {
 
       const referralCode = payload && !taskSlug && !toSignupSource(payload) ? payload : null;
 
+      const openLabel = taskSlug ? 'Open this task' : `Open ${BRAND.name}`;
       await sendBotMessage(
         chatId,
-        startMessage(message.from.first_name, referralCode, Boolean(taskSlug)),
-        openButton(taskSlug ? 'Open this task' : `Open ${BRAND.name}`, url),
+        startMessage(
+          message.from.first_name,
+          referralCode,
+          Boolean(taskSlug),
+          Boolean(invite?.required),
+        ),
+        invite
+          ? joinButtons(invite.url, openLabel, url)
+          : openButton(openLabel, url),
       );
       return;
     }
@@ -224,8 +324,10 @@ export async function handleBotUpdate(update: TelegramUpdate): Promise<void> {
     if (command === '/help') {
       await sendBotMessage(
         chatId,
-        helpMessage(supportHandle, formatNaira(settings.withdrawals.minAmountKobo)),
-        openButton(`Open ${BRAND.name}`, miniAppUrl()),
+        helpMessage(supportHandle, formatNaira(settings.withdrawals.minAmountKobo), invite),
+        invite
+          ? joinButtons(invite.url, `Open ${BRAND.name}`, miniAppUrl())
+          : openButton(`Open ${BRAND.name}`, miniAppUrl()),
       );
       return;
     }

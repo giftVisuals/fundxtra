@@ -3,4 +3,4 @@ Allow: /
 Disallow: /app
 Disallow: /admin
 
-Sitemap: https://fundxtra.name.ng/sitemap.xml
+Sitemap: https://fundxtra.vercel.app/sitemap.xml

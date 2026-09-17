@@ -32,12 +32,18 @@ vi.mock('../src/lib/firebase', async () => {
 /** Captures what the bot would send, instead of calling Telegram. */
 const sent: Array<{ chatId: string | number; text: string; markup?: unknown }> = [];
 
+/** What Telegram says about channel membership. Tests set this. */
+let membership: { state: string; status?: string; adminMessage?: string } = {
+  state: 'JOINED',
+  status: 'member',
+};
+
 vi.mock('../src/lib/telegram-bot', () => ({
   sendBotMessage: async (chatId: string | number, text: string, markup?: unknown) => {
     sent.push({ chatId, text, markup });
     return true;
   },
-  checkChatMembership: async () => ({ state: 'JOINED', status: 'member' }),
+  checkChatMembership: async () => membership,
   probeChatAccess: async () => ({ ok: true, title: 'Fundxtra', warning: null }),
   notifyUser: async () => true,
   getBotIdentity: async () => ({ id: 7_000_000_000, username: 'fundxtrabot' }),
@@ -72,6 +78,7 @@ vi.mock('../src/services/completions', () => ({
 
 const { createApp } = await import('../src/app');
 const { invalidateSettingsCache } = await import('../src/services/settings');
+const { clearChannelCache } = await import('../src/services/channel');
 const app = createApp();
 
 /** The secret the route expects, derived exactly as the server derives it. */
@@ -97,6 +104,8 @@ function post(update: unknown, secret: string | null = SECRET) {
 
 beforeEach(() => {
   sent.length = 0;
+  clearChannelCache();
+  membership = { state: 'JOINED', status: 'member' };
 });
 
 describe('webhook authentication', () => {
@@ -396,6 +405,92 @@ describe('maintenance lockdown', () => {
 
     await post(startUpdate('/start'));
     expect(sent[0]?.text).not.toContain('closed for maintenance');
+    expect(JSON.stringify(sent[0]?.markup)).toContain('web_app');
+  });
+});
+
+/**
+ * The bot and the channel.
+ *
+ * The Mini App will not let a non-member past its front screen, so the bot
+ * must not greet them as though it will. And it must never be the thing that
+ * strands a real user: if Telegram cannot answer, the bot behaves normally.
+ */
+describe('channel membership', () => {
+  it('asks a non-member to join, and offers no way into the app', async () => {
+    membership = { state: 'NOT_JOINED', status: 'left' };
+
+    await post(startUpdate('/start'));
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.text).toContain('Join the Fundxtra channel');
+    expect(sent[0]?.text).not.toContain('Here is how it works');
+
+    /*
+      Join first, then the app — in that order, and the app button stays
+      because it is how they come back once they have joined. Dropping it
+      would leave a blocked user with nowhere to go but /start again.
+    */
+    const markup = JSON.stringify(sent[0]?.markup);
+    expect(markup).toContain('https://t.me/fundxtra');
+    expect(markup.indexOf('t.me/fundxtra')).toBeLessThan(markup.indexOf('web_app'));
+  });
+
+  it('tells someone who left that their balance is safe', async () => {
+    store.commit([
+      { kind: 'set', path: 'users/991001', data: { telegramId: '991001', hasPin: true, status: 'ACTIVE' } },
+    ]);
+    membership = { state: 'NOT_JOINED', status: 'left' };
+
+    await post(startUpdate('/start'));
+
+    expect(sent[0]?.text).toContain('balance');
+    expect(sent[0]?.text).toContain('safe');
+    expect(sent[0]?.text).toContain('join back');
+    store.commit([{ kind: 'delete', path: 'users/991001', data: {} }]);
+  });
+
+  it('says the same to every command, not just /start', async () => {
+    membership = { state: 'NOT_JOINED', status: 'left' };
+
+    await post(startUpdate('/help'));
+    await post(startUpdate('/support'));
+    await post(startUpdate('hello?'));
+
+    expect(sent).toHaveLength(3);
+    for (const message of sent) {
+      expect(message.text).toContain('Join the Fundxtra channel');
+      const markup = JSON.stringify(message.markup);
+      expect(markup.indexOf('t.me/fundxtra')).toBeLessThan(markup.indexOf('web_app'));
+    }
+  });
+
+  it('states the requirement in the welcome, with a join button', async () => {
+    await post(startUpdate('/start'));
+
+    expect(sent[0]?.text).toContain('must join our Telegram channel');
+    const markup = JSON.stringify(sent[0]?.markup);
+    // Both doors, join first.
+    expect(markup).toContain('https://t.me/fundxtra');
+    expect(markup).toContain('web_app');
+    expect(markup.indexOf('t.me/fundxtra')).toBeLessThan(markup.indexOf('web_app'));
+  });
+
+  it('behaves normally when Telegram cannot answer', async () => {
+    membership = { state: 'CONFIGURATION_ERROR', adminMessage: 'bot is not an administrator' };
+
+    await post(startUpdate('/start'));
+
+    expect(sent[0]?.text).toContain('Complete tasks. Earn rewards.');
+    expect(JSON.stringify(sent[0]?.markup)).toContain('web_app');
+  });
+
+  it('keeps answering the owner, whether or not they are in the channel', async () => {
+    membership = { state: 'NOT_JOINED', status: 'left' };
+
+    await post(startUpdate('/start', 6_438_544_386));
+
+    expect(sent[0]?.text).toContain('Complete tasks. Earn rewards.');
     expect(JSON.stringify(sent[0]?.markup)).toContain('web_app');
   });
 });

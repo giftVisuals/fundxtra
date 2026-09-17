@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { tokens } from '@fundxtra/shared';
+import { BRAND, tokens } from '@fundxtra/shared';
 import {
   EarnIcon,
   FluidGlassTabBar,
@@ -86,6 +86,12 @@ export function AppShell() {
   if (session.state === 'MAINTENANCE') {
     return <MaintenanceLock message={session.error?.message ?? null} />;
   }
+
+  /*
+    Channel membership, above the PIN gate for the same reason as the
+    lockdown: there is nothing behind it to unlock yet.
+  */
+  if (session.state === 'CHANNEL_REQUIRED') return <ChannelGate />;
 
   if (session.state === 'ERROR') {
     return (
@@ -174,6 +180,12 @@ export function AppShell() {
     </div>
   );
 }
+
+const FALLBACK_CHANNEL = {
+  handle: BRAND.channelHandle,
+  url: BRAND.channelUrl,
+  required: true,
+};
 
 function CentredMessage({ children }: { children: React.ReactNode }) {
   return (
@@ -300,6 +312,109 @@ function MaintenanceLock({ message }: { message: string | null }) {
             Contact Fundxtra Support
           </Button>
         </div>
+      </div>
+    </CentredMessage>
+  );
+}
+
+/**
+ * Join the channel to continue.
+ *
+ * Two audiences, one screen. Someone new is being told the house rule before
+ * they have invested anything. Someone who left had a balance and tasks, and
+ * the first thing they will fear is that their money is gone — so that is the
+ * first thing this answers, before it asks them for anything.
+ *
+ * "I have joined" re-runs the handshake rather than trusting the tap: the
+ * server asks Telegram again, so the button cannot talk its way past the gate.
+ */
+function ChannelGate() {
+  const session = useSession();
+  const [checking, setChecking] = useState(false);
+  const [missed, setMissed] = useState(false);
+  /*
+    The server sends the live invite in every session payload. The fallback
+    covers the one moment it has not: a request refused for membership before
+    any payload arrived, where the alternative is a screen with no way out.
+  */
+  const channel = session.channel ?? FALLBACK_CHANNEL;
+  const returning = session.channelReturning;
+
+  const check = async () => {
+    setChecking(true);
+    setMissed(false);
+    await session.reauthenticate();
+    // Still here means Telegram still does not see them in the channel.
+    setChecking(false);
+    setMissed(true);
+  };
+
+  return (
+    <CentredMessage>
+      <div style={{ textAlign: 'center' }}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/brand/fundxtra-mark.png"
+          alt="Fundxtra"
+          width={56}
+          height={46}
+          style={{ margin: '0 auto 24px' }}
+        />
+        <h1 style={{ fontSize: tokens.typography.size.xl }}>
+          {returning ? 'Join back to continue' : 'Join our Telegram channel'}
+        </h1>
+        <p
+          style={{
+            marginTop: 10,
+            fontSize: tokens.typography.size.base,
+            lineHeight: tokens.typography.leading.relaxed,
+            color: tokens.semantic.inkMuted,
+          }}
+        >
+          {returning
+            ? 'You are no longer in the Fundxtra channel, so earning is paused. Your balance and everything you have earned are safe — join back and you carry on exactly where you left off.'
+            : 'Everyone on Fundxtra is a member of our Telegram channel. It is where new tasks, payout news and announcements are posted.'}
+        </p>
+
+        <div style={{ display: 'grid', gap: 10, marginTop: 28 }}>
+          <Button size="lg" fullWidth onClick={() => openExternal(channel.url)}>
+            Join {channel.handle}
+          </Button>
+          <Button variant="secondary" fullWidth loading={checking} onClick={() => void check()}>
+            I have joined — continue
+          </Button>
+        </div>
+
+        {missed && (
+          <p
+            style={{
+              marginTop: 16,
+              fontSize: tokens.typography.size.sm,
+              lineHeight: tokens.typography.leading.relaxed,
+              color: tokens.colors.warning.strong,
+            }}
+          >
+            Telegram still does not show you in {channel.handle}. Open the channel, tap <b>Join</b>,
+            then come back and try again. If you have joined and this keeps happening, message
+            Fundxtra Support.
+          </p>
+        )}
+
+        <button
+          type="button"
+          onClick={() => openExternal(supportUrl)}
+          style={{
+            marginTop: 20,
+            background: 'none',
+            border: 'none',
+            fontSize: tokens.typography.size.sm,
+            fontWeight: tokens.typography.weight.medium,
+            color: tokens.semantic.inkMuted,
+            cursor: 'pointer',
+          }}
+        >
+          Contact Fundxtra Support
+        </button>
       </div>
     </CentredMessage>
   );

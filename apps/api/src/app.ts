@@ -15,7 +15,7 @@ import { telegramRouter } from './routes/telegram';
 import { referralsRouter } from './routes/referrals';
 import { tasksRouter } from './routes/tasks';
 import { walletRouter } from './routes/wallet';
-import { maintenanceGate } from './middleware/auth';
+import { channelGate, maintenanceGate } from './middleware/auth';
 
 /**
  * Express application.
@@ -120,7 +120,7 @@ export function createApp(): Express {
   });
 
   app.get('/', (_req, res) => {
-    res.json({ service: 'fundxtra-api', docs: 'https://fundxtra.name.ng' });
+    res.json({ service: 'fundxtra-api', docs: env.PUBLIC_WEB_URL });
   });
 
   // A broad per-IP ceiling under the per-route policies.
@@ -150,6 +150,14 @@ export function createApp(): Express {
   app.use('/admin', adminRouter);
 
   app.use(maintenanceGate);
+  /*
+    Earning, referrals and the wallet all sit behind channel membership when an
+    admin has made it required. One gate in front of the four routers rather
+    than a check inside each, for the same reason as maintenance: a rule about
+    who may use the platform belongs where the platform is assembled, not
+    scattered through the features it applies to.
+  */
+  app.use(channelGate);
   app.use('/tasks', tasksRouter);
   app.use('/referrals', referralsRouter);
   app.use('/announcements', announcementsRouter);

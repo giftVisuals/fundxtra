@@ -5,6 +5,7 @@ import {
   telegramAuthSchema,
   toSignupSource,
   verifyPinSchema,
+  type ChannelInvite,
   type UserProfile,
 } from '@fundxtra/shared';
 import { env, hasTelegram } from '../config/env';
@@ -13,7 +14,13 @@ import { newUuid } from '../lib/ids';
 import { issueSession } from '../lib/session';
 import { verifyInitData, type TelegramUser } from '../lib/telegram-auth';
 import { RATE_LIMITS } from '../lib/rate-limit';
-import { authenticated, loadAdmin, maintenanceGate, requireSession } from '../middleware/auth';
+import {
+  authenticated,
+  channelGate,
+  loadAdmin,
+  maintenanceGate,
+  requireSession,
+} from '../middleware/auth';
 import { rateLimit } from '../middleware/rate-limit';
 import { ok } from '../middleware/respond';
 import { parsed, validateBody } from '../middleware/validate';
@@ -21,6 +28,7 @@ import { changePin, checkPin, createPin, getPinStatus } from '../services/auth';
 import { attributeReferral, qualifyReferral } from '../services/referrals';
 import { recordSecurityEvent } from '../services/security';
 import { getSettings } from '../services/settings';
+import { channelInvite, channelMembership } from '../services/channel';
 import { buildDashboard, findOrCreateUser, markOnboarded, requireUser, toProfile } from '../services/users';
 import { resolveAdmin } from '../services/admins';
 
@@ -52,6 +60,23 @@ interface AuthResponse {
   user: UserProfile;
   isAdmin: boolean;
   adminRole: string | null;
+  /** Always false here: a sign-in that needs the channel returns the shape below. */
+  needsChannel: false;
+  channel: ChannelInvite | null;
+}
+
+/**
+ * The answer to a sign-in from someone who has not joined the channel.
+ *
+ * No token, deliberately. "Blocked from logging in" has to mean there is
+ * nothing to log in *with* — a session they cannot use would be a lock on the
+ * screen rather than on the door.
+ */
+interface ChannelGateResponse {
+  needsChannel: true;
+  channel: ChannelInvite;
+  /** They already have an account, so the copy asks them to join *back*. */
+  returning: boolean;
 }
 
 authRouter.post(
@@ -103,8 +128,36 @@ authRouter.post(
         await attributeReferral(user, startPayload);
       }
 
-      const pinStatus = await getPinStatus(user.id);
       const admin = operator ?? (await resolveAdmin(user.telegramId, user.username));
+
+      /*
+        Channel membership, checked after the account exists but before any
+        session is issued.
+
+        Why after: the referral that brought this person here is attributed on
+        account creation, and losing that attribution because they stepped out
+        to tap Join would quietly cost their referrer the reward they earned.
+        The account is created, the referral is recorded, and they are still
+        not let in.
+
+        Why before the token: no session at all is the only honest reading of
+        "blocked until they join". Admins are exempt, as everywhere.
+      */
+      const invite = channelInvite(settings);
+      if (invite?.required && !admin) {
+        const state = await channelMembership(user.telegramId, invite.handle);
+        if (state === 'MISSING') {
+          const gate: ChannelGateResponse = {
+            needsChannel: true,
+            channel: invite,
+            returning: user.hasPin,
+          };
+          ok(res, gate);
+          return;
+        }
+      }
+
+      const pinStatus = await getPinStatus(user.id);
 
       // The session is issued un-PIN-verified. Nothing that moves money is
       // reachable until POST /auth/pin/verify upgrades it.
@@ -134,6 +187,8 @@ authRouter.post(
         user: toProfile(user, settings.platform.botUsername),
         isAdmin: Boolean(admin),
         adminRole: admin?.role ?? null,
+        needsChannel: false,
+        channel: invite,
       };
       ok(res, payload);
     } catch (error) {
@@ -286,7 +341,14 @@ authRouter.post(
  * so `qualifyReferral` runs once — and even if it did not, the ledger's
  * idempotency key would refuse a second ₦100.
  */
-authRouter.get('/session', ...authenticated, loadAdmin, maintenanceGate, async (req, res, next) => {
+authRouter.get(
+  '/session',
+  ...authenticated,
+  loadAdmin,
+  maintenanceGate,
+  // A user who leaves the channel mid-session stops having a dashboard.
+  channelGate,
+  async (req, res, next) => {
   try {
     const sessionUser = req.user!;
 

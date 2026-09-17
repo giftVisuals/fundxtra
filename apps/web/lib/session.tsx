@@ -10,11 +10,12 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { DashboardSummary, UserProfile } from '@fundxtra/shared';
+import type { ChannelInvite, DashboardSummary, UserProfile } from '@fundxtra/shared';
 import { invalidateResources } from './resource';
 import {
   api,
   ApiError,
+  setChannelHandler,
   setMaintenanceHandler,
   setSessionToken,
   setUnauthenticatedHandler,
@@ -29,6 +30,7 @@ import { initialiseTelegram, insideTelegram, rawInitData, startParam } from './t
  *   BOOTING     -> exchanging Telegram initData for a session
  *   OUTSIDE     -> not running inside Telegram; show the "open in Telegram" screen
  *   MAINTENANCE -> an admin has closed the platform; nothing else may render
+ *   CHANNEL     -> the Telegram channel must be joined before anything else
  *   NEEDS_PIN   -> first-time user must create a PIN
  *   LOCKED      -> returning user must enter their PIN
  *   READY       -> dashboard is loaded
@@ -44,13 +46,14 @@ export type SessionState =
   | 'BOOTING'
   | 'OUTSIDE_TELEGRAM'
   | 'MAINTENANCE'
+  | 'CHANNEL_REQUIRED'
   | 'NEEDS_PIN'
   | 'LOCKED'
   | 'READY'
   | 'BLOCKED'
   | 'ERROR';
 
-interface AuthResponse {
+interface AuthSessionResponse {
   token: string;
   expiresAt: string;
   needsPin: boolean;
@@ -59,7 +62,18 @@ interface AuthResponse {
   user: UserProfile;
   isAdmin: boolean;
   adminRole: string | null;
+  needsChannel: false;
+  channel: ChannelInvite | null;
 }
+
+/** The server issues no token until the channel has been joined. */
+interface ChannelGateResponse {
+  needsChannel: true;
+  channel: ChannelInvite;
+  returning: boolean;
+}
+
+type AuthResponse = AuthSessionResponse | ChannelGateResponse;
 
 interface SessionResponse extends DashboardSummary {
   isAdmin: boolean;
@@ -103,6 +117,13 @@ export interface SessionContextValue {
   pinLocked: boolean;
   lockedUntil: string | null;
   error: SessionError | null;
+  /**
+   * The channel to join, as the server last described it. Null when no
+   * channel is configured, or before the first payload has arrived.
+   */
+  channel: ChannelInvite | null;
+  /** True when the blocked user already had an account — "join back". */
+  channelReturning: boolean;
   /** Re-run the Telegram handshake from scratch. */
   reauthenticate: () => Promise<void>;
   /** Called after a PIN is created or verified, with the upgraded token. */
@@ -124,6 +145,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [pinLocked, setPinLocked] = useState(false);
   const [lockedUntil, setLockedUntil] = useState<string | null>(null);
   const [error, setError] = useState<SessionError | null>(null);
+  const [channel, setChannel] = useState<ChannelInvite | null>(null);
+  const [channelReturning, setChannelReturning] = useState(false);
+
+  /**
+   * Whether this session is an admin, readable from a callback.
+   *
+   * The global handlers below are registered once and would otherwise close
+   * over the first render's `isAdmin`. Admins are exempt from both gates on
+   * the server, so a gate response reaching an admin means something else went
+   * wrong — and locking them out of their own app on the strength of a stale
+   * closure is exactly the bug this guards.
+   */
+  const adminRef = useRef(false);
 
   /** Guards against two concurrent handshakes on a fast double mount. */
   const handshaking = useRef(false);
@@ -154,7 +188,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setDashboard(summary);
     setUser(summary.user);
     setIsAdmin(summary.isAdmin);
+    adminRef.current = summary.isAdmin;
     setAdminRole(summary.admin?.role ?? null);
+    if (summary.channel) setChannel(summary.channel);
     setState(summary.user.status === 'ACTIVE' ? 'READY' : 'BLOCKED');
   }, []);
 
@@ -182,12 +218,27 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         { anonymous: true },
       );
 
+      /*
+        No token when the channel has not been joined. There is nothing to
+        store and no screen to show but the join screen, which is what
+        "blocked from logging in" has to mean.
+      */
+      if (auth.needsChannel) {
+        setSessionToken(null);
+        setChannel(auth.channel);
+        setChannelReturning(auth.returning);
+        setState('CHANNEL_REQUIRED');
+        return;
+      }
+
       setSessionToken(auth.token);
       setUser(auth.user);
       setIsAdmin(auth.isAdmin);
+      adminRef.current = auth.isAdmin;
       setAdminRole(auth.adminRole);
       setPinLocked(auth.pinLocked);
       setLockedUntil(auth.lockedUntil);
+      if (auth.channel) setChannel(auth.channel);
 
       if (auth.user.status !== 'ACTIVE') {
         setState('BLOCKED');
@@ -231,6 +282,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         failWith(caught, 'Fundxtra is being updated.');
         return;
       }
+      // Handled by the global channel handler, which has already moved the
+      // app to the join screen; nothing to add here.
+      if (caught instanceof ApiError && caught.isChannelRequired) return;
       if (caught instanceof ApiError && caught.isAuthError) await authenticate();
     }
   }, [loadDashboard, authenticate, failWith]);
@@ -250,10 +304,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       panels have all quietly failed.
     */
     setMaintenanceHandler((message) => {
+      if (adminRef.current) return;
       setSessionToken(null);
       invalidateResources();
       setError({ message, code: 'MAINTENANCE', status: 503 });
       setState('MAINTENANCE');
+    });
+    /*
+      Someone left the channel mid-session. Their session is dropped and the
+      join screen takes over — they are not locked out of their money, they
+      are one tap from continuing, and the screen says so.
+    */
+    setChannelHandler(() => {
+      if (adminRef.current) return;
+      setSessionToken(null);
+      invalidateResources();
+      setChannelReturning(true);
+      setState('CHANNEL_REQUIRED');
     });
     setUnauthenticatedHandler(() => {
       setSessionToken(null);
@@ -266,6 +333,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => {
       setUnauthenticatedHandler(null);
       setMaintenanceHandler(null);
+      setChannelHandler(null);
     };
   }, [authenticate]);
 
@@ -279,6 +347,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       pinLocked,
       lockedUntil,
       error,
+      channel,
+      channelReturning,
       reauthenticate: authenticate,
       completePinFlow,
       refresh,
@@ -286,6 +356,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }),
     [
       state, user, dashboard, isAdmin, adminRole, pinLocked, lockedUntil, error,
+      channel, channelReturning,
       authenticate, completePinFlow, refresh, applyBalance,
     ],
   );

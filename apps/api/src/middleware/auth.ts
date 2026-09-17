@@ -1,10 +1,11 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { ERROR_CODES, hasPermission, type Permission } from '@fundxtra/shared';
-import { AppError, forbidden, maintenance, unauthenticated } from '../lib/errors';
-import { bearerToken, verifySession } from '../lib/session';
+import { AppError, channelRequired, forbidden, maintenance, unauthenticated } from '../lib/errors';
+import { bearerToken, verifySession, type SessionClaims } from '../lib/session';
 import { assertUsable, findUser, invalidateUser } from '../services/users';
-import { resolveAdmin, touchAdmin } from '../services/admins';
+import { isPrimaryAdmin, resolveAdmin, touchAdmin } from '../services/admins';
 import { getSettings } from '../services/settings';
+import { channelInvite, channelMembership } from '../services/channel';
 import { recordSecurityEvent } from '../services/security';
 
 /**
@@ -154,6 +155,46 @@ export function requirePermission(permission: Permission): RequestHandler {
 export const adminOnly: RequestHandler[] = [requireSession, loadUser, loadAdmin, requireAdmin];
 
 /**
+ * Is this caller an admin, wherever the question is asked?
+ *
+ * `req.admin` is only populated where `loadAdmin` has run, which is the admin
+ * router and a handful of named routes. The app-wide gates below sit in front
+ * of routers that resolve their own session *later*, so at that point
+ * `req.admin` is undefined for everybody — including the owner. Reading it
+ * alone is what made maintenance mode lock the admin out of their own app: the
+ * dashboard let them in, and then every panel behind it was refused.
+ *
+ * So the session is read from the bearer token here when the middleware chain
+ * has not produced one yet. The primary admin is recognised from the token
+ * alone; anyone else costs one read, and only while a gate is actually closed.
+ */
+export async function callerIsAdmin(req: Request): Promise<boolean> {
+  if (req.admin) return true;
+
+  const session = req.session ?? sessionFromHeader(req);
+  if (!session) return false;
+
+  // Free: the owner's id is a constant, not a row.
+  if (isPrimaryAdmin(session.telegramId)) return true;
+
+  const admin = await resolveAdmin(session.telegramId, session.username);
+  return Boolean(admin);
+}
+
+/** The session a request carries, without rejecting one that carries none. */
+function sessionFromHeader(req: Request): SessionClaims | null {
+  const token = bearerToken(req.header('authorization'));
+  if (!token) return null;
+  try {
+    return verifySession(token);
+  } catch {
+    // An invalid token is not this middleware's error to raise; the route's
+    // own `requireSession` will reject it with the right code.
+    return null;
+  }
+}
+
+/**
  * Block non-admin traffic during maintenance.
  *
  * Maintenance mode is a full lockdown, not a banner: while it is on, a
@@ -163,19 +204,74 @@ export const adminOnly: RequestHandler[] = [requireSession, loadUser, loadAdmin,
  * the app can lock its screen and say why instead of showing a broken
  * dashboard full of failed panels.
  *
- * Admins keep working, because the lockdown is usually theirs to lift. That
- * exemption depends on `req.admin`, so this handler is only correct where
- * `loadAdmin` has already run: as the app-wide gate it sits after the admin
- * router, and on a route it must be listed after `loadAdmin`.
+ * Admins keep working throughout, because the lockdown is usually theirs to
+ * lift — and an outage that also locks out the only person who can end it is
+ * an outage nobody can end.
  */
 export const maintenanceGate: RequestHandler = async (req, _res, next) => {
   try {
     const settings = await getSettings();
-    if (!settings.platform.maintenanceMode || req.admin) {
+    if (!settings.platform.maintenanceMode || (await callerIsAdmin(req))) {
       next();
       return;
     }
     next(maintenance(settings.platform.maintenanceMessage));
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Require membership of the Telegram channel, when an admin has made it
+ * required.
+ *
+ * Sits beside the maintenance gate and works the same way, with the same
+ * exemption: an admin is never blocked. Locking the owner or the person
+ * reviewing screenshots out of the platform because they are not subscribed
+ * to its announcements would be a self-inflicted outage.
+ *
+ * A request with no session passes through untouched — it is not this
+ * middleware's job to reject it, and the route behind it will. Only a
+ * definite "not a member" blocks; see services/channel.ts for why.
+ */
+export const channelGate: RequestHandler = async (req, _res, next) => {
+  try {
+    const settings = await getSettings();
+    const invite = channelInvite(settings);
+    if (!invite?.required) {
+      next();
+      return;
+    }
+
+    const session = req.session ?? sessionFromHeader(req);
+    if (!session) {
+      next();
+      return;
+    }
+
+    /*
+      Membership before admin status, deliberately.
+
+      Membership is answered from memory for anyone already known to be in the
+      channel, so the common case — a member making a request — touches neither
+      Telegram nor Firestore. Asking "are you an admin?" first would put a
+      database read in front of every request on the platform, which is a cost
+      this codebase has already had to dig itself out of once.
+
+      So the admin lookup happens only where it changes the outcome: someone
+      who would otherwise be blocked.
+    */
+    const state = await channelMembership(session.telegramId, invite.handle);
+    if (state !== 'MISSING') {
+      next();
+      return;
+    }
+
+    if (await callerIsAdmin(req)) {
+      next();
+      return;
+    }
+    next(channelRequired(`${session.telegramId} is not in ${invite.handle}`));
   } catch (error) {
     next(error);
   }

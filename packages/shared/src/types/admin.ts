@@ -221,6 +221,21 @@ export interface SystemSettings {
     supportHandle: string;
     /** Whether the public site may show live statistics. */
     publicStatsEnabled: boolean;
+    /**
+     * Telegram channel users are pointed at — '@name', or a numeric id for a
+     * private chat. Blank or null means no channel at all.
+     */
+    requiredChannel: string | null;
+    /**
+     * Whether membership of that channel is *required* to use Fundxtra.
+     *
+     * Enforcing it needs the bot to be an administrator of the channel, since
+     * that is the only way Telegram will answer `getChatMember`. When the
+     * answer cannot be obtained the user is let through rather than blocked:
+     * losing every user to our own misconfiguration is far worse than a few
+     * non-members slipping past.
+     */
+    requireChannelJoin: boolean;
   };
   updatedBy: string | null;
   updatedAt: IsoDate;

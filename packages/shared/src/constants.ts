@@ -6,9 +6,21 @@ export const BRAND = {
   tagline: 'Complete tasks. Earn rewards. Refer friends.',
   description:
     'Fundxtra is a Telegram-first rewards platform. Complete sponsored tasks, earn Naira rewards, refer friends, then withdraw as cash or redeem for airtime, data, Telegram Stars and Telegram Premium.',
-  publicUrl: 'https://fundxtra.name.ng',
+  // Whatever is actually serving the site. No custom domain is connected
+  // yet, so this is the Vercel deployment — not an aspirational address.
+  publicUrl: 'https://fundxtra.vercel.app',
   supportHandle: '@fundxtracarebot',
   supportUrl: 'https://t.me/fundxtracarebot',
+  /**
+   * The Fundxtra announcement channel.
+   *
+   * Which channel is *required* is a setting an admin can change, and the
+   * server always sends the live one to the client. This is the fallback for
+   * the one moment the client may not have it yet: a request refused with
+   * CHANNEL_REQUIRED before any payload carrying the invite arrived.
+   */
+  channelHandle: '@fundxtra',
+  channelUrl: 'https://t.me/fundxtra',
   currency: 'NGN',
   currencySymbol: '₦',
   locale: 'en-NG',
@@ -296,6 +308,14 @@ export const ERROR_CODES = {
    * dashboard that is no longer allowed to load.
    */
   MAINTENANCE: 'MAINTENANCE',
+  /**
+   * The user has not joined the Telegram channel membership is gated on.
+   *
+   * Like MAINTENANCE, its own code because the client must answer it with a
+   * screen rather than an error: there is one action that fixes it, and the
+   * app's job is to offer that action.
+   */
+  CHANNEL_REQUIRED: 'CHANNEL_REQUIRED',
   INTERNAL: 'INTERNAL',
 } as const;
 
@@ -332,6 +352,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   // Overridden at the point of use with the message the admin typed in
   // Settings, which is the one that can say how long and why.
   MAINTENANCE: 'Fundxtra is being updated. Please check back shortly.',
+  CHANNEL_REQUIRED: 'Join the Fundxtra channel to continue.',
   INTERNAL: 'Something went wrong. Please try again.',
 };
 

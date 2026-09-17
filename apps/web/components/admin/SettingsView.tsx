@@ -383,6 +383,46 @@ export function SettingsView() {
                 style={adminInputStyle}
               />
             </AdminField>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                padding: 10,
+                borderRadius: tokens.radii.xs,
+                background: tokens.semantic.bgSubtle,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: tokens.typography.size.sm }}>Require channel join</div>
+                <div
+                  style={{
+                    fontSize: tokens.typography.size['2xs'],
+                    color: tokens.semantic.inkSubtle,
+                  }}
+                >
+                  Users cannot sign in or earn until they are in the channel below. The Fundxtra
+                  bot must be an administrator of it — if Telegram will not confirm membership,
+                  users are let through rather than locked out.
+                </div>
+              </div>
+              <Toggle
+                label="Require channel join"
+                checked={value('platform', 'requireChannelJoin') as boolean}
+                onChange={(next) => set('platform', 'requireChannelJoin', next)}
+              />
+            </div>
+            <AdminField
+              label="Channel"
+              hint="@name, or a numeric id for a private channel. Leave blank for none."
+            >
+              <input
+                defaultValue={(value('platform', 'requiredChannel') as string | null) ?? ''}
+                onChange={(event) => set('platform', 'requiredChannel', event.target.value)}
+                style={adminInputStyle}
+              />
+            </AdminField>
             <AdminField label="Bot username" hint="Used to build referral links. No @.">
               <input
                 defaultValue={value('platform', 'botUsername') as string}

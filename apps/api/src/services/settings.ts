@@ -1,5 +1,5 @@
 import { Timestamp } from 'firebase-admin/firestore';
-import { LIMITS, type SystemSettings } from '@fundxtra/shared';
+import { BRAND, LIMITS, type SystemSettings } from '@fundxtra/shared';
 import { COLLECTIONS, DOC_IDS, db } from '../lib/firebase';
 import { env } from '../config/env';
 import { nowIso, toIso, toIsoRequired } from '../lib/time';
@@ -70,6 +70,14 @@ export function defaultSettings(): SystemSettings {
       botUsername: env.TELEGRAM_BOT_USERNAME,
       supportHandle: '@fundxtracarebot',
       publicStatsEnabled: true,
+      /*
+        Users must join the Fundxtra channel. Enforced only as far as Telegram
+        will confirm it: if the bot is not an administrator of the channel the
+        check cannot be answered, and users are let through rather than shut
+        out. See services/channel.ts.
+      */
+      requiredChannel: BRAND.channelHandle,
+      requireChannelJoin: true,
     },
     updatedBy: null,
     updatedAt: nowIso(),

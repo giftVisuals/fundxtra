@@ -399,6 +399,9 @@ export const systemSettingsUpdateSchema = z.object({
       botUsername: trimmed(64).optional(),
       supportHandle: trimmed(64).optional(),
       publicStatsEnabled: z.boolean().optional(),
+      // Blank clears it, which is how a gate is removed entirely.
+      requiredChannel: trimmed(64).nullable().optional(),
+      requireChannelJoin: z.boolean().optional(),
     })
     .optional(),
   reason: trimmed(300).optional(),

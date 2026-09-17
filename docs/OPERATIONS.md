@@ -128,6 +128,24 @@ best thing they can read.
 
 ---
 
+## "It says I must join the channel"
+
+Everyone on Fundxtra has to be a member of the Telegram channel. Someone who
+has not joined — or who joined and later left — cannot sign in or earn, and
+sees one screen asking them to join.
+
+What to tell them, in this order:
+
+1. Their balance and everything they have earned are safe. Nothing is lost.
+2. Open the channel, tap **Join**, come back and tap **I have joined**.
+3. It works immediately. There is nothing to wait for and nobody to approve it.
+
+If they insist they have joined and it still refuses them, tell the owner —
+that means Telegram is not confirming membership, which is a configuration
+problem on our side, not theirs. Do not tell them to make a new account.
+
+---
+
 ## If the owner closes the platform
 
 There is a **Maintenance mode** switch in Settings. It is the owner's switch,

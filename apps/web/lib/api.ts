@@ -43,6 +43,11 @@ export class ApiError extends Error {
   get isMaintenance(): boolean {
     return this.code === 'MAINTENANCE';
   }
+
+  /** The user must join the Telegram channel before anything else works. */
+  get isChannelRequired(): boolean {
+    return this.code === 'CHANNEL_REQUIRED';
+  }
 }
 
 let sessionToken: string | null = null;
@@ -50,6 +55,8 @@ let sessionToken: string | null = null;
 let onUnauthenticated: (() => void) | null = null;
 /** Invoked when the server reports a lockdown, so the app can close itself. */
 let onMaintenance: ((message: string) => void) | null = null;
+/** Invoked when the server requires channel membership, so the app can ask. */
+let onChannelRequired: (() => void) | null = null;
 
 export function setSessionToken(token: string | null): void {
   sessionToken = token;
@@ -73,6 +80,18 @@ export function setUnauthenticatedHandler(handler: (() => void) | null): void {
  */
 export function setMaintenanceHandler(handler: ((message: string) => void) | null): void {
   onMaintenance = handler;
+}
+
+/**
+ * Register what happens when any request comes back CHANNEL_REQUIRED.
+ *
+ * Global for the same reason as the lockdown: someone can leave the channel
+ * mid-session, and the next request must move the whole app to the join
+ * screen rather than fail one panel inside a dashboard they are no longer
+ * entitled to.
+ */
+export function setChannelHandler(handler: (() => void) | null): void {
+  onChannelRequired = handler;
 }
 
 export interface RequestOptions {
@@ -152,6 +171,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     // rather than showing an error the user cannot act on.
     if (apiError.isAuthError) onUnauthenticated?.();
     if (apiError.isMaintenance) onMaintenance?.(apiError.message);
+    if (apiError.isChannelRequired) onChannelRequired?.();
     throw apiError;
   }
 

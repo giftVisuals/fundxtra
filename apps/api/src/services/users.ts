@@ -17,6 +17,7 @@ import { nowIso, toIso, toIsoRequired } from '../lib/time';
 import { logger } from '../lib/logger';
 import type { TelegramUser } from '../lib/telegram-auth';
 import { getSettings, withdrawalAvailability } from './settings';
+import { channelInvite } from './channel';
 import { bumpStats, countSignup } from './stats';
 import { sumTodayCredits } from './ledger';
 import { countActiveTasks } from './tasks';
@@ -334,6 +335,9 @@ export async function buildDashboard(user: User): Promise<DashboardSummary> {
     pendingSubmissionCount: pendingSubmissions,
     withdrawalsOpen: availability.open,
     withdrawalNotice: availability.reason,
+    // The client shows the channel card from this, and falls back to it if a
+    // later request is refused for membership.
+    channel: channelInvite(settings),
   };
 }
 

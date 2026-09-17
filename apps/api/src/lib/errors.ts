@@ -56,6 +56,7 @@ const DEFAULT_STATUS: Partial<Record<ErrorCode, number>> = {
   DATABASE_SETUP_REQUIRED: 503,
   DATABASE_UNAVAILABLE: 503,
   MAINTENANCE: 503,
+  CHANNEL_REQUIRED: 403,
   INTERNAL: 500,
 };
 
@@ -75,6 +76,16 @@ export const validationFailed = (fields: Record<string, string>, detail?: string
  */
 export const maintenance = (message: string, detail?: string) =>
   new AppError(ERROR_CODES.MAINTENANCE, { message, detail });
+
+/**
+ * The caller has not joined the channel membership is gated on.
+ *
+ * Carries no channel link: the client already has the invite from its session
+ * payload, and falls back to the brand's channel if it somehow does not. An
+ * error envelope is the wrong place to ship configuration.
+ */
+export const channelRequired = (detail?: string) =>
+  new AppError(ERROR_CODES.CHANNEL_REQUIRED, { detail });
 
 export const internal = (detail: string, cause?: unknown) =>
   new AppError(ERROR_CODES.INTERNAL, { detail, cause });

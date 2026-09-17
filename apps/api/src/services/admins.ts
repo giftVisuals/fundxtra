@@ -10,7 +10,7 @@ import { COLLECTIONS, db } from '../lib/firebase';
 import { env } from '../config/env';
 import { nowIso, toIso, toIsoRequired } from '../lib/time';
 import { logger } from '../lib/logger';
-import { Throttle } from '../lib/cache';
+import { KeyedCache, Throttle } from '../lib/cache';
 
 /**
  * Admins.
@@ -54,10 +54,58 @@ export function isPrimaryAdmin(telegramId: string): boolean {
  *
  * Also claims a pending username invite, which is why it takes the username.
  */
+/**
+ * Admin lookups, cached — including the negative ones.
+ *
+ * "Is this caller an admin?" is asked on every admin request, and now on every
+ * gated user request too. The answer is almost always no, and a `null` from a
+ * document that does not exist still costs a read: without caching the misses,
+ * the maintenance and channel gates would each add one read per request to the
+ * whole platform, which is the cost pattern this codebase has already had to
+ * dig itself out of once.
+ *
+ * `{ admin }` is wrapped so a cached `null` is distinguishable from a miss.
+ * Every write path below invalidates, and the short TTL is only a backstop:
+ * revoking an admin has to take effect promptly, not eventually.
+ */
+const adminCache = new KeyedCache<{ admin: Admin | null }>(60_000, 5_000, 'admins');
+
+/** Concurrent lookups of the same id share one read. */
+const adminReads = new Map<string, Promise<Admin | null>>();
+
+export function invalidateAdmin(telegramId: string): void {
+  adminCache.invalidate(telegramId);
+}
+
+export function clearAdminCache(): void {
+  adminCache.clear();
+  adminReads.clear();
+}
+
 export async function resolveAdmin(
   telegramId: string,
   username: string | null,
 ): Promise<Admin | null> {
+  const cached = adminCache.get(telegramId);
+  if (cached) return cached.admin;
+
+  const pending = adminReads.get(telegramId);
+  if (pending) return pending;
+
+  const read = readAdmin(telegramId, username)
+    .then((admin) => {
+      adminCache.set(telegramId, { admin });
+      return admin;
+    })
+    .finally(() => {
+      if (adminReads.get(telegramId) === read) adminReads.delete(telegramId);
+    });
+
+  adminReads.set(telegramId, read);
+  return read;
+}
+
+async function readAdmin(telegramId: string, username: string | null): Promise<Admin | null> {
   if (isPrimaryAdmin(telegramId)) {
     // Keep a database row for the primary admin so the admin list shows them,
     // but never depend on it for authorisation. Throttled: the row does not
@@ -209,6 +257,7 @@ export async function upsertAdmin(input: {
     .collection(COLLECTIONS.admins)
     .doc(input.telegramId)
     .set(record, { merge: true });
+  invalidateAdmin(input.telegramId);
   return mapAdmin(input.telegramId, record);
 }
 
@@ -236,6 +285,13 @@ export async function createInvite(input: {
     expiresAt,
   };
   await ref.set(record);
+  /*
+    The invited person may have signed in moments ago and been cached as "not
+    an admin". Their next sign-in claims this invite, so that answer must not
+    be allowed to stand — and we do not know their Telegram id yet, which is
+    the whole point of an invite by username.
+  */
+  clearAdminCache();
 
   return {
     id: normalised,
@@ -261,6 +317,7 @@ export async function updateAdmin(
     .collection(COLLECTIONS.admins)
     .doc(telegramId)
     .update({ ...patch, updatedAt: Timestamp.now() });
+  invalidateAdmin(telegramId);
 }
 
 export async function removeAdmin(telegramId: string): Promise<void> {
@@ -272,6 +329,7 @@ export async function removeAdmin(telegramId: string): Promise<void> {
     .collection(COLLECTIONS.admins)
     .doc(telegramId)
     .update({ active: false, updatedAt: Timestamp.now() });
+  invalidateAdmin(telegramId);
 }
 
 /**

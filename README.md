@@ -6,7 +6,7 @@ and Telegram Premium.
 
 **Complete tasks. Earn rewards. Refer friends.**
 
-- Public site: [fundxtra.name.ng](https://fundxtra.name.ng)
+- Public site: [fundxtra.vercel.app](https://fundxtra.vercel.app)
 - Mini App: `/app` (opened from the Telegram bot)
 - Admin console: `/admin`
 - Support: [@fundxtracarebot](https://t.me/fundxtracarebot)

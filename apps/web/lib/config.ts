@@ -29,8 +29,15 @@ const BOT_USERNAME = 'fundxtrabot';
 /** Support account shown wherever a user needs a human — PIN resets included. */
 const SUPPORT_HANDLE = '@fundxtracarebot';
 
-/** Public marketing site. */
-const SITE_URL = 'https://fundxtra.name.ng';
+/**
+ * Public marketing site.
+ *
+ * The Vercel deployment, because that is what serves the site today. When a
+ * custom domain is connected, set NEXT_PUBLIC_SITE_URL rather than editing
+ * this — the value is printed on receipts and used for canonical URLs, so it
+ * must never name an address that does not resolve.
+ */
+const SITE_URL = 'https://fundxtra.vercel.app';
 
 function override(value: string | undefined, fallback: string): string {
   return value && value.length > 0 ? value : fallback;

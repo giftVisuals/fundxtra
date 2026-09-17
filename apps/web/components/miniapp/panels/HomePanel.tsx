@@ -9,6 +9,7 @@ import {
   type Announcement,
 } from '@fundxtra/shared';
 import { api } from '@/lib/api';
+import { openExternal } from '@/lib/telegram';
 import { useSession } from '@/lib/session';
 import { Badge, Button, Card, StatBlock } from '@/components/ui';
 import { EarnIcon, GiftIcon, ReferIcon, WalletIcon } from '@/components/glass';
@@ -218,7 +219,7 @@ export function HomePanel({ onNavigate }: { onNavigate: (id: string) => void }) 
         <Row
           leading={<IconTile><ReferIcon active /></IconTile>}
           title="Refer a friend"
-          subtitle="Earn a bonus for every friend who joins and sets up"
+          subtitle="Earn a bonus for every friend who joins and earns their first reward"
           onClick={() => onNavigate('refer')}
         />
         <Row
@@ -228,6 +229,8 @@ export function HomePanel({ onNavigate }: { onNavigate: (id: string) => void }) 
           onClick={() => onNavigate('wallet')}
         />
       </Section>
+
+      <ChannelCard />
 
       {announcements && announcements.length > 0 && (
         <Section title="Announcements">
@@ -278,6 +281,91 @@ export function HomePanel({ onNavigate }: { onNavigate: (id: string) => void }) 
  * opening the app does not perform a pointless countdown. The DOM text is
  * updated imperatively to avoid re-rendering the whole panel 60 times a second.
  */
+/**
+ * The channel, on the dashboard.
+ *
+ * Deliberately quiet: one row, below everything a user came here to do, and
+ * dismissible for good. Membership is already enforced at the door, so on this
+ * screen the channel is an invitation to read it, not a demand — and a demand
+ * that cannot be dismissed, sitting above someone's balance, is exactly the
+ * kind of nagging that makes people stop opening an app.
+ *
+ * Dismissal is per-device and best-effort. `localStorage` throws in a private
+ * window and can come back empty, so every access is guarded and the card
+ * simply shows.
+ */
+const CHANNEL_CARD_DISMISSED = 'fx.channelCard.dismissed';
+
+function ChannelCard() {
+  const { channel } = useSession();
+  const [dismissed, setDismissed] = useState(true);
+
+  useEffect(() => {
+    try {
+      setDismissed(window.localStorage.getItem(CHANNEL_CARD_DISMISSED) === '1');
+    } catch {
+      setDismissed(false);
+    }
+  }, []);
+
+  if (!channel || dismissed) return null;
+
+  const hide = () => {
+    setDismissed(true);
+    try {
+      window.localStorage.setItem(CHANNEL_CARD_DISMISSED, '1');
+    } catch {
+      // A device that will not remember the dismissal is not worth an error.
+    }
+  };
+
+  return (
+    <Card padding={14} style={{ marginBottom: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontSize: tokens.typography.size.sm,
+              fontWeight: tokens.typography.weight.semibold,
+            }}
+          >
+            Fundxtra on Telegram
+          </div>
+          <div
+            style={{
+              marginTop: 2,
+              fontSize: tokens.typography.size['2xs'],
+              lineHeight: tokens.typography.leading.relaxed,
+              color: tokens.semantic.inkSubtle,
+            }}
+          >
+            New tasks and payout news are posted in {channel.handle}
+          </div>
+        </div>
+        <Button size="sm" variant="secondary" onClick={() => openExternal(channel.url)}>
+          Open
+        </Button>
+        <button
+          type="button"
+          aria-label="Hide this"
+          onClick={hide}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: 6,
+            lineHeight: 1,
+            fontSize: tokens.typography.size.sm,
+            color: tokens.semantic.inkSubtle,
+            cursor: 'pointer',
+          }}
+        >
+          ✕
+        </button>
+      </div>
+    </Card>
+  );
+}
+
 function AnimatedBalance({ kobo }: { kobo: number }) {
   const reduceMotion = useReducedMotion();
   const nodeRef = useRef<HTMLSpanElement>(null);

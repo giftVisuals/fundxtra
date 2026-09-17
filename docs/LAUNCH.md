@@ -80,21 +80,38 @@ patient than you.
 
 ---
 
-## 6. Buy the domain
+## 6. Make the bot an admin of @fundxtra
 
-`fundxtra.name.ng` is printed on every receipt and rides along in the share
-text when someone shares one. Right now it does not resolve.
+Users must be in the channel to sign in or earn. Telegram will only confirm
+who is a member of a chat the bot administers, so:
 
-Buy it, then add it in **Vercel → Project → Settings → Domains** and follow
-the DNS records Vercel gives you. Then set `PUBLIC_WEB_URL` on Railway to the
-new address, and add the same address to `CORS_ORIGINS`.
+**Open @fundxtra → Administrators → add the Fundxtra bot.** No special rights
+are needed; being an administrator is enough.
 
-Until that is done, every receipt points somewhere dead. It is not urgent for
-five test users. It is embarrassing at five hundred.
+Check it worked: open the Mini App from an account that is *not* in the
+channel. It should show the join screen. If it lets you straight in, the bot
+is not an administrator — the check is failing and everyone is being let
+through. That is the deliberate behaviour (a broken check must never lock out
+real users), but it means the requirement is not actually on.
+
+The channel and the requirement are both in **Settings → Platform**, so you
+can turn it off without a deploy.
 
 ---
 
-## 7. Check the money you are about to owe
+## 7. A domain is not required
+
+Everything — receipts, share text, canonical links, the bot's buttons — uses
+`fundxtra.vercel.app`, which resolves and is served over HTTPS. Nothing points
+anywhere dead and nothing is waiting on a purchase.
+
+A custom domain is a branding decision for later, not a launch step. When you
+want one, the three settings it needs are listed under **Custom domain** in
+`docs/DEPLOYMENT.md`.
+
+---
+
+## 8. Check the money you are about to owe
 
 Not a settings screen — a decision.
 

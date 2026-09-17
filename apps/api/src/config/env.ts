@@ -112,8 +112,8 @@ const envSchema = z.object({
    * Public web origin, used to build absolute links and the Mini App URL.
    *
    * Defaults to the Vercel deployment because that is what is actually
-   * serving; change it to https://fundxtra.name.ng once that domain is
-   * connected, or set this variable to override without a deploy.
+   * serving. Set this variable if a custom domain is ever connected; no
+   * deploy is needed to change it.
    */
   PUBLIC_WEB_URL: z.string().url().default('https://fundxtra.vercel.app'),
 
