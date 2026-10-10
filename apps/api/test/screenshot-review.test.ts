@@ -254,8 +254,10 @@ describe('choosing a model', () => {
     expect(probe.reachable).toBe(true);
     expect(probe.model).toBeNull();
     expect(probe.acceptsImages).toBe(false);
-    expect(probe.detail).toContain('accept images');
+    expect(probe.detail).toContain('refused an image');
     expect(probe.models).toHaveLength(2);
+    // The evidence, not just the conclusion.
+    expect(probe.tested.every((test) => test.verdict === 'blind')).toBe(true);
   });
 
   it('names the chosen model to the admin console when there is one', async () => {
@@ -269,5 +271,69 @@ describe('choosing a model', () => {
     expect(probe.acceptsImages).toBe(true);
     expect(probe.pinned).toBe(false);
     expect(probe.detail).toBeNull();
+  });
+});
+
+/**
+ * A refusal that is not about images is not evidence of blindness.
+ *
+ * The first version of this test treated any non-200 as "cannot see", so a
+ * rate limit or a quibble about the test image would switch off a reviewer
+ * that works perfectly — and leave it off for hours, silently, with every
+ * screenshot queueing behind a person.
+ */
+describe('refusals that are not about sight', () => {
+  function mockRateLimited(models: string[]) {
+    resetReviewerStatus();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: { body?: string }) => {
+        if (String(url).endsWith('/models')) {
+          return { ok: true, status: 200, json: async () => ({ data: models.map((id) => ({ id })) }) };
+        }
+        const body = JSON.parse(init?.body ?? '{}') as Record<string, unknown>;
+        if (JSON.stringify(body).includes('Reply with the single word: ok')) {
+          return {
+            ok: false,
+            status: 429,
+            text: async () => 'Rate limit reached for requests',
+            json: async () => ({}),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '',
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({ observed: 'seen', verdict: 'APPROVE', confidence: 0.98, reason: '' }),
+                },
+              },
+            ],
+          }),
+        };
+      }),
+    );
+  }
+
+  it('still uses a model that was only rate-limited during the test', async () => {
+    mockRateLimited(['qwen/qwen9-vision']);
+
+    // Not ruled out: the refusal said nothing about images.
+    expect(await visionModel()).toBe('qwen/qwen9-vision');
+
+    const review = await reviewScreenshot({ task, proofPath: 'https://i.ibb.co/a/b.png' });
+    expect(review.verdict).toBe('APPROVE');
+  });
+
+  it('says so in the console rather than claiming the key is blind', async () => {
+    mockRateLimited(['qwen/qwen9-vision']);
+
+    const probe = await probeReviewer();
+    expect(probe.model).toBe('qwen/qwen9-vision');
+    expect(probe.detail).toContain('not about images');
+    expect(probe.tested[0]?.verdict).toBe('inconclusive');
   });
 });

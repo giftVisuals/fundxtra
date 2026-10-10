@@ -718,6 +718,7 @@ interface ReviewerProbe {
   models: string[];
   acceptsImages: boolean | null;
   detail: string | null;
+  tested: { id: string; verdict: string; detail: string | null }[];
 }
 
 function AutoReviewCard() {
@@ -862,7 +863,7 @@ function AutoReviewCard() {
               </p>
             )}
 
-            {probe.models.length > 0 && probe.acceptsImages !== true && (
+            {probe.tested.length > 0 && probe.acceptsImages !== true && (
               <details>
                 <summary
                   style={{
@@ -871,9 +872,14 @@ function AutoReviewCard() {
                     cursor: 'pointer',
                   }}
                 >
-                  {probe.models.length} models this key can reach — every one was sent a test
-                  image
+                  What each model said when it was shown a picture
                 </summary>
+                {/*
+                  The evidence, not the conclusion. "No vision model on this
+                  key" is a serious thing to tell somebody, and several of
+                  these refusals turn out to be about rate limits rather than
+                  about sight — so the exact words are here to be checked.
+                */}
                 <ul
                   style={{
                     margin: '8px 0 0',
@@ -883,9 +889,31 @@ function AutoReviewCard() {
                     lineHeight: tokens.typography.leading.relaxed,
                   }}
                 >
-                  {probe.models.map((model) => (
-                    <li key={model}>
-                      <code>{model}</code>
+                  {probe.tested.map((test) => (
+                    <li key={test.id} style={{ marginBottom: 6 }}>
+                      <code>{test.id}</code>
+                      {' — '}
+                      <strong
+                        style={{
+                          color:
+                            test.verdict === 'reads'
+                              ? tokens.colors.success.strong
+                              : test.verdict === 'blind'
+                                ? tokens.colors.danger.strong
+                                : tokens.colors.warning.strong,
+                        }}
+                      >
+                        {test.verdict === 'reads'
+                          ? 'reads images'
+                          : test.verdict === 'blind'
+                            ? 'no image support'
+                            : 'unclear'}
+                      </strong>
+                      {test.detail && (
+                        <div style={{ color: tokens.semantic.inkSubtle, wordBreak: 'break-word' }}>
+                          {test.detail}
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -897,11 +925,12 @@ function AutoReviewCard() {
                     color: tokens.semantic.inkSubtle,
                   }}
                 >
-                  None of them accepted one, so this key has no vision model on it and every
-                  screenshot will keep going to a person. That is an account question, not a
-                  setting: a Groq account with a multimodal model, or another provider. Press{' '}
-                  <strong>Check the reviewer</strong> again after changing the key — if Groq adds
-                  one to your plan, it is picked up with no deploy.
+                  Read the reasons above before believing the headline. Only{' '}
+                  <strong>no image support</strong> rules a model out; anything marked{' '}
+                  <strong>unclear</strong> is still tried on real screenshots. If every line says
+                  no image support, this is an account question rather than a setting — the model
+                  list belongs to the Groq <em>account</em>, not the key, so a new key on the same
+                  account shows exactly the same models.
                 </p>
               </details>
             )}

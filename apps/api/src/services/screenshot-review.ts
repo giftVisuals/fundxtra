@@ -153,10 +153,32 @@ const PREFERRED = [/scout|maverick/i, /vision|vl\b|llava/i, /120b|90b|70b/i, /qw
 
 let chosen: { id: string; at: number } | null = null;
 let discovering: Promise<string | null> | null = null;
+/** What each candidate said when it was shown a picture. For the console. */
+let lastTests: ImageTest[] = [];
 
-/** A 1x1 transparent PNG. The smallest honest test of "do you take images?". */
-const ONE_PIXEL_PNG =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+/**
+ * The test image: 32x32, a black square on white, 102 bytes.
+ *
+ * Not one pixel, which is what this was first. A degenerate image gets
+ * refused by things that read pictures perfectly well — minimum dimensions
+ * are a common rule — and the refusal then looks identical to "this model is
+ * blind". A test that produces false negatives about a money path is worse
+ * than no test.
+ */
+const TEST_IMAGE =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAALUlEQVR42mP4T2PAMGrBqAVD2AIGEsGoBaMWjFowasGoBcPTgtEqc9SCEWQBAKuE93k7oq+mAAAAAElFTkSuQmCC';
+
+/**
+ * Does the refusal mean "I cannot see", or something else entirely?
+ *
+ * Only the first is a reason to rule a model out. Rate limits, quota,
+ * transient faults and quibbles about the test image itself say nothing about
+ * whether the model reads screenshots — and treating them as a no is how a
+ * working reviewer gets switched off by its own diagnostics.
+ */
+function meansNoVision(detail: string): boolean {
+  return /image|vision|multimodal|modality|content type|image_url/i.test(detail);
+}
 
 /** The model to use right now, or null when this key cannot read images at all. */
 export async function visionModel(): Promise<string | null> {
@@ -193,8 +215,21 @@ async function listModels(): Promise<string[]> {
     .filter(Boolean);
 }
 
-/** Does this model actually accept an image? Asked, not assumed. */
-async function acceptsImages(model: string): Promise<boolean> {
+/**
+ * What happened when this model was shown a picture.
+ *
+ * Three outcomes, not two. "Inconclusive" exists because a refusal that is
+ * not about images — a rate limit, a quota, a bad gateway — is not evidence
+ * of blindness, and a model ruled out on that basis stays ruled out for six
+ * hours while every screenshot queues behind a person.
+ */
+interface ImageTest {
+  id: string;
+  verdict: 'reads' | 'blind' | 'inconclusive';
+  detail: string | null;
+}
+
+async function testImage(model: string): Promise<ImageTest> {
   try {
     const response = await fetch(`${env.GROQ_BASE_URL}/chat/completions`, {
       method: 'POST',
@@ -212,15 +247,27 @@ async function acceptsImages(model: string): Promise<boolean> {
             role: 'user',
             content: [
               { type: 'text', text: 'Reply with the single word: ok' },
-              { type: 'image_url', image_url: { url: ONE_PIXEL_PNG } },
+              { type: 'image_url', image_url: { url: TEST_IMAGE } },
             ],
           },
         ],
       }),
     });
-    return response.ok;
-  } catch {
-    return false;
+
+    if (response.ok) return { id: model, verdict: 'reads', detail: null };
+
+    const detail = (await response.text().catch(() => '')).slice(0, 220);
+    return {
+      id: model,
+      verdict: meansNoVision(detail) ? 'blind' : 'inconclusive',
+      detail: `HTTP ${String(response.status)}: ${detail}`,
+    };
+  } catch (error) {
+    return {
+      id: model,
+      verdict: 'inconclusive',
+      detail: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -251,22 +298,41 @@ async function discoverVisionModel(): Promise<string | null> {
     it happens a few times a day at most, and a user waiting on a screenshot
     should not pay for a serial walk through a model catalogue.
   */
-  const outcomes = await Promise.all(
-    candidates.map(async (id) => ({ id, ok: await acceptsImages(id) })),
-  );
-  const winner = outcomes.find((outcome) => outcome.ok);
+  lastTests = await Promise.all(candidates.map((id) => testImage(id)));
 
-  if (!winner) {
-    recordProblem(
-      `None of the ${String(models.length)} models this key can reach accept images, so every screenshot goes to a person. The key works; it just has no vision model on it.`,
-    );
-    return null;
+  const reads = lastTests.find((test) => test.verdict === 'reads');
+  if (reads) {
+    chosen = { id: reads.id, at: Date.now() };
+    logger.info({ model: reads.id, candidates: candidates.length }, 'Chose a vision model');
+    lastProblem = null;
+    return reads.id;
   }
 
-  chosen = { id: winner.id, at: Date.now() };
-  logger.info({ model: winner.id, candidates: candidates.length }, 'Chose a vision model');
-  lastProblem = null;
-  return winner.id;
+  /*
+    Nothing read the picture. Whether that is final depends on *why*: a model
+    that said nothing about images may simply have been rate-limited, and
+    ruling it out would switch off a reviewer that works. So an inconclusive
+    result is tried anyway — a real screenshot is a better test than a
+    synthetic one, and the worst case is one failed review that escalates to
+    a person, which is where it was going regardless.
+  */
+  const maybe = lastTests.find((test) => test.verdict === 'inconclusive');
+  if (maybe) {
+    chosen = { id: maybe.id, at: Date.now() };
+    logger.warn(
+      { model: maybe.id, detail: maybe.detail },
+      'No model confirmed images; trying the most likely one on real submissions',
+    );
+    recordProblem(
+      `No model confirmed it reads images. Trying ${maybe.id} on real screenshots anyway — it refused the test for a reason that was not about images (${maybe.detail ?? 'unknown'}).`,
+    );
+    return maybe.id;
+  }
+
+  recordProblem(
+    `All ${String(candidates.length)} usable models on this key explicitly refused an image, so every screenshot goes to a person. The key works; the account has no vision model on it.`,
+  );
+  return null;
 }
 
 /**
@@ -289,6 +355,15 @@ export interface ReviewerProbe {
   acceptsImages: boolean | null;
   /** Groq's own words when something was refused. */
   detail: string | null;
+  /**
+   * What each candidate said when it was shown a picture.
+   *
+   * The evidence, not the conclusion. "No vision model on this key" is a
+   * serious thing to tell someone, and it should be possible to check it
+   * rather than take it on trust — several of these refusals turn out to be
+   * about rate limits or the test image rather than about sight.
+   */
+  tested: { id: string; verdict: string; detail: string | null }[];
 }
 
 export async function probeReviewer(): Promise<ReviewerProbe> {
@@ -300,6 +375,7 @@ export async function probeReviewer(): Promise<ReviewerProbe> {
     models: [],
     acceptsImages: null,
     detail: null,
+    tested: [],
   };
 
   if (!env.GROQ_API_KEY) {
@@ -319,6 +395,11 @@ export async function probeReviewer(): Promise<ReviewerProbe> {
   // find out what is true now, not what was true six hours ago.
   forgetVisionModel();
   result.model = await visionModel();
+  result.tested = lastTests.map((test) => ({
+    id: test.id,
+    verdict: test.verdict,
+    detail: test.detail,
+  }));
 
   if (!result.model) {
     result.acceptsImages = false;
@@ -328,11 +409,12 @@ export async function probeReviewer(): Promise<ReviewerProbe> {
     return result;
   }
 
-  result.acceptsImages = await acceptsImages(result.model);
+  const test = await testImage(result.model);
+  result.acceptsImages = test.verdict === 'reads';
   if (!result.acceptsImages) {
     result.detail = result.pinned
-      ? `${result.model} is pinned with GROQ_VISION_MODEL but refuses images. Unset that variable and the platform will choose one that works.`
-      : `${result.model} stopped accepting images between being chosen and being tested.`;
+      ? `${result.model} is pinned with GROQ_VISION_MODEL and refused the test image. ${test.detail ?? ''} Unset that variable and the platform will choose for itself.`
+      : lastProblem?.detail ?? test.detail;
   }
   return result;
 }
