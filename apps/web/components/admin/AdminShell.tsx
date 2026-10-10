@@ -625,6 +625,8 @@ function OverviewView() {
         )}
       </AdminCard>
 
+      <AutoReviewCard />
+
       <AdminCard title="Reward fulfilment">
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -696,6 +698,88 @@ function OverviewView() {
         </div>
       </AdminCard>
     </div>
+  );
+}
+
+/**
+ * Whether screenshots are being decided automatically — and if not, why.
+ *
+ * Every failure inside the reviewer ends as "send it to a person", which is
+ * the right behaviour and a completely silent one. An owner who believes
+ * review is automatic and finds a growing queue has nothing to look at. This
+ * is that thing to look at: the state, the reason, and the exact fix.
+ */
+function AutoReviewCard() {
+  const { data } = useAdmin();
+  if (!data) return null;
+
+  const review = data.autoReview;
+  const live = review.configured && review.enabled;
+
+  return (
+    <AdminCard title="Automatic screenshot review">
+      <div style={{ display: 'grid', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span
+            style={{
+              padding: '2px 8px',
+              borderRadius: tokens.radii.pill,
+              fontSize: tokens.typography.size['2xs'],
+              fontWeight: tokens.typography.weight.semibold,
+              background: live ? tokens.colors.success.soft : tokens.colors.warning.soft,
+              color: live ? tokens.colors.success.strong : tokens.colors.warning.strong,
+            }}
+          >
+            {live ? 'ON' : 'OFF'}
+          </span>
+          <span style={{ fontSize: tokens.typography.size.sm, color: tokens.semantic.inkMuted }}>
+            {review.reviewed > 0
+              ? `${review.reviewed.toLocaleString('en-NG')} screenshot${review.reviewed === 1 ? '' : 's'} read since the last restart`
+              : 'Nothing read yet since the last restart'}
+          </span>
+        </div>
+
+        {!review.configured && (
+          <p
+            style={{
+              fontSize: tokens.typography.size.xs,
+              lineHeight: tokens.typography.leading.relaxed,
+              color: tokens.colors.warning.strong,
+            }}
+          >
+            <strong>GROQ_API_KEY is not set on the API.</strong> Every screenshot is waiting for a
+            person instead. Add the variable on Railway and redeploy — nothing else needs changing,
+            and submissions already in the queue stay exactly where they are.
+          </p>
+        )}
+
+        {review.configured && !review.enabled && (
+          <p style={{ fontSize: tokens.typography.size.xs, color: tokens.semantic.inkMuted }}>
+            Switched off in Settings. Turn on <strong>Automatic screenshot review</strong> there.
+          </p>
+        )}
+
+        {review.lastProblem && (
+          <p
+            style={{
+              fontSize: tokens.typography.size.xs,
+              lineHeight: tokens.typography.leading.relaxed,
+              color: tokens.colors.danger.strong,
+              wordBreak: 'break-word',
+            }}
+          >
+            <strong>Last problem:</strong> {review.lastProblem.detail}
+          </p>
+        )}
+
+        <p style={{ fontSize: tokens.typography.size['2xs'], color: tokens.semantic.inkSubtle }}>
+          Model: <code>{review.model}</code>. Hosted models get retired — if the problem above
+          mentions the model, set <code>GROQ_VISION_MODEL</code> to a current one. Anything the
+          reviewer is unsure about is sent to your Telegram with two buttons, and nothing is ever
+          rejected by it without a reason the user can read.
+        </p>
+      </div>
+    </AdminCard>
   );
 }
 

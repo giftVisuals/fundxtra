@@ -146,6 +146,25 @@ problem on our side, not theirs. Do not tell them to make a new account.
 
 ---
 
+## Screenshots that decide themselves
+
+Most screenshots are read automatically and decided in seconds. You will only
+see the ones the reviewer was not sure about — and the owner also gets those
+in Telegram with two buttons.
+
+Two things follow from that:
+
+- **A submission can disappear from your queue while you are looking at it**,
+  because the owner decided it from their phone. That is not a bug.
+- **Your decision closes theirs.** Approving in the console rewrites the
+  Telegram message to "Approved", so nobody taps it twice.
+
+If the queue suddenly fills with ordinary, obvious screenshots, automatic
+review has stopped. Tell the owner — **Admin → Overview** has a panel that
+says why.
+
+---
+
 ## If the owner closes the platform
 
 There is a **Maintenance mode** switch in Settings. It is the owner's switch,

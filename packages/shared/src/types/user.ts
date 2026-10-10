@@ -49,6 +49,20 @@ export interface User {
   pendingOutKobo: Kobo;
 
   tasksCompleted: number;
+
+  /**
+   * Today's earnings, kept here rather than recomputed.
+   *
+   * `todayKey` is the platform day these two belong to; when it is not today
+   * they are simply stale and read as zero. Maintained by the ledger inside
+   * the same write that moves the balance, so the dashboard costs nothing to
+   * show them — the alternative was reading every credit the user had
+   * received today, every time they opened the app.
+   */
+  todayKey: string | null;
+  todayEarnedKobo: Kobo;
+  todayCreditCount: number;
+
   referralCode: string;
   /** Telegram id of the referrer, set once and never changed. */
   referredBy: string | null;
@@ -81,6 +95,7 @@ export interface UserProfile {
   pendingOutKobo: Kobo;
   lifetimeEarnedKobo: Kobo;
   tasksCompleted: number;
+
   referralCode: string;
   referralLink: string;
   referralCount: number;

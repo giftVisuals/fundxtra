@@ -13,14 +13,13 @@ import { COLLECTIONS, db } from '../lib/firebase';
 import { KeyedCache } from '../lib/cache';
 import { AppError, notFound } from '../lib/errors';
 import { newReferralCode } from '../lib/ids';
-import { nowIso, toIso, toIsoRequired } from '../lib/time';
+import { nowIso, platformDayKey, toIso, toIsoRequired } from '../lib/time';
 import { logger } from '../lib/logger';
 import type { TelegramUser } from '../lib/telegram-auth';
 import { getSettings, withdrawalAvailability } from './settings';
 import { channelInvite } from './channel';
 import { bumpStats, countSignup } from './stats';
-import { sumTodayCredits } from './ledger';
-import { countActiveTasks } from './tasks';
+import { countActiveTasks, pendingSubmissionCount } from './tasks';
 
 /**
  * Users.
@@ -312,20 +311,22 @@ export async function buildDashboard(user: User): Promise<DashboardSummary> {
   const settings = await getSettings();
   const availability = withdrawalAvailability(settings);
 
-  const [today, availableTasks, pendingSubmissions] = await Promise.all([
-    sumTodayCredits(user.id),
+  const [availableTasks, pendingSubmissions] = await Promise.all([
     // From the shared campaign cache rather than its own aggregation: this is
     // the same number for every user, and it is already in memory.
     countActiveTasks().catch(() => 0),
-    db()
-      .collection(COLLECTIONS.taskSubmissions)
-      .where('userId', '==', user.id)
-      .where('status', '==', 'PENDING_REVIEW')
-      .count()
-      .get()
-      .then((result) => result.data().count)
-      .catch(() => 0),
+    // From this user's cached task state, which the Earn tab loads anyway.
+    pendingSubmissionCount(user.id).catch(() => 0),
   ]);
+
+  /*
+    Today's figures come off the user document, which the ledger keeps current
+    as it credits. They used to be a query over every credit the user received
+    today, which made opening the dashboard cost more the more someone earned.
+  */
+  const today = user.todayKey === platformDayKey()
+    ? { kobo: user.todayEarnedKobo, count: user.todayCreditCount }
+    : { kobo: 0, count: 0 };
 
   return {
     user: toProfile(user, settings.platform.botUsername),
@@ -359,6 +360,9 @@ export function mapUser(id: string, data: Record<string, unknown>): User {
     lifetimePaidOutKobo: (data.lifetimePaidOutKobo as number | undefined) ?? 0,
     pendingOutKobo: (data.pendingOutKobo as number | undefined) ?? 0,
     tasksCompleted: (data.tasksCompleted as number | undefined) ?? 0,
+    todayKey: (data.todayKey as string | null) ?? null,
+    todayEarnedKobo: (data.todayEarnedKobo as number | undefined) ?? 0,
+    todayCreditCount: (data.todayCreditCount as number | undefined) ?? 0,
     referralCode: String(data.referralCode ?? ''),
     referredBy: (data.referredBy as string | null) ?? null,
     signupSource: (data.signupSource as SignupSource | null) ?? null,

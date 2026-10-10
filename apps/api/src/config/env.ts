@@ -210,6 +210,16 @@ export function readiness(): { ready: boolean; missing: string[]; warnings: stri
     warnings.push('IMGBB_API_KEY is not set; screenshot proof uploads will be refused.');
   }
 
+  if (!env.GROQ_API_KEY) {
+    // Also a warning only: without it every screenshot simply waits for a
+    // person, which is how the platform worked before the reviewer existed.
+    // But an owner who thinks review is automatic and finds a growing queue
+    // has no way to tell, so it is said out loud.
+    warnings.push(
+      'GROQ_API_KEY is not set; screenshots are not reviewed automatically and every one waits for a person.',
+    );
+  }
+
   return { ready: missing.length === 0, missing, warnings };
 }
 

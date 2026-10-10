@@ -29,7 +29,7 @@ import { attributeReferral, qualifyReferral } from '../services/referrals';
 import { recordSecurityEvent } from '../services/security';
 import { getSettings } from '../services/settings';
 import { channelInvite, channelMembership } from '../services/channel';
-import { buildDashboard, findOrCreateUser, markOnboarded, requireUser, toProfile } from '../services/users';
+import { buildDashboard, findOrCreateUser, markOnboarded, toProfile } from '../services/users';
 import { resolveAdmin } from '../services/admins';
 
 /**
@@ -359,14 +359,21 @@ authRouter.get(
       anybody with a few throwaway Telegram accounts. See
       services/completions.ts.
     */
-    if (sessionUser.hasPin) {
+    // Only when it has not happened: the flag is on the user we already hold,
+    // so the common case — every dashboard open after the first — does not
+    // open a transaction to read a field it is looking at.
+    if (sessionUser.hasPin && !sessionUser.onboardedAt) {
       await markOnboarded(sessionUser.id);
     }
 
-    // Re-read: qualification may have changed this user's own counters, and a
-    // stale profile here would show the wrong balance on first load.
-    const user = await requireUser(sessionUser.id);
-    const dashboard = await buildDashboard(user);
+    /*
+      The user the session middleware already loaded, not a second read of the
+      same document. There used to be a re-read here because qualifying a
+      referral changed this user's own counters mid-request — that stopped
+      being true when qualification moved to the first completed task, and the
+      read stayed behind, costing every dashboard open an extra one.
+    */
+    const dashboard = await buildDashboard(sessionUser);
 
     ok(res, {
       ...dashboard,

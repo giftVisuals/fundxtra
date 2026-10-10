@@ -85,6 +85,17 @@ async function signIn(id: number) {
   return (response.body.data as { token: string }).token;
 }
 
+/** Signed in and PIN-verified, which anything that moves money requires. */
+async function signInWithPin(id: number) {
+  const token = await signIn(id);
+  const unlocked = await request(app)
+    .post('/auth/pin')
+    .set('authorization', `Bearer ${token}`)
+    .send({ pin: '8351', confirmPin: '8351' });
+  expect(unlocked.status).toBe(200);
+  return (unlocked.body.data as { token: string }).token;
+}
+
 function seedTasks(count: number) {
   for (let index = 0; index < count; index += 1) {
     store.seed('tasks', `task-${String(index)}`, {
@@ -241,7 +252,9 @@ describe('a full app open', () => {
       written down.
     */
     const budgets: [string, number][] = [
-      ['/auth/session', 4],
+      // One read for the user, two for the per-user task state behind the
+      // "waiting on review" badge — which the Earn tab then reuses for free.
+      ['/auth/session', 3],
       ['/tasks', 3],
       ['/referrals', 3],
       ['/wallet', 1],
@@ -273,5 +286,145 @@ describe('a full app open', () => {
 
     // Opening the app used to write a SESSION_ISSUED row every single time.
     expect(store.metrics.writes).toBe(0);
+  });
+});
+
+/**
+ * What a working day costs.
+ *
+ * Browsing was brought down first; this is about the part that was left —
+ * what it costs when somebody actually *uses* the platform. Two defects hid
+ * here, and both had the same shape: a cost that grew with how much a user
+ * had earned.
+ *
+ *  - The dashboard summed today's credits by reading every one of them, so
+ *    twenty completed tasks meant twenty-plus reads on every refresh.
+ *  - The task list read the user's entire completion history on every open,
+ *    forever.
+ *
+ * Both are gone. The numbers below are asserted so they cannot come back, and
+ * the writes are asserted too — those are the floor, and the comments say why
+ * each one exists.
+ */
+describe('what a heavy day costs', () => {
+  function seedTelegramTask(id: string) {
+    store.seed('tasks', id, {
+      title: `Task ${id}`, description: 'Join the channel and come back.',
+      instructions: ['Join'], category: 'TELEGRAM', status: 'ACTIVE',
+      verification: 'TELEGRAM_MEMBERSHIP', requiresProof: false,
+      rewardKobo: 1_000, budgetKobo: 1_000_000, spentKobo: 0,
+      maxCompletions: 500, completionCount: 0, pendingCount: 0, perUserLimit: 1,
+      targetUrl: null, telegramChatId: '@fundxtra', telegramChatLabel: 'Fundxtra',
+      verificationWarning: null, reviewCriteria: null, sponsor: null,
+      startsAt: null, endsAt: null, minimumDwellSeconds: 0, sortWeight: 100,
+      createdBy: 'admin', createdAt: new Date(), updatedAt: new Date(),
+    });
+  }
+
+  it('charges a fixed price per completion, however many came before', async () => {
+    const token = await signInWithPin(910_100);
+    for (let index = 0; index < 12; index += 1) seedTelegramTask(`c${String(index)}`);
+    invalidateTaskCache();
+    await request(app).get('/tasks').set('authorization', `Bearer ${token}`);
+
+    const costs: { reads: number; writes: number }[] = [];
+    for (let index = 0; index < 12; index += 1) {
+      store.resetMetrics();
+      const response = await request(app)
+        .post(`/tasks/c${String(index)}/complete`)
+        .set('authorization', `Bearer ${token}`)
+        .send({ dwellSeconds: 5 });
+      expect(response.status, `completion ${String(index)}`).toBe(200);
+      costs.push({ ...store.metrics });
+    }
+
+    /*
+      Four reads: the user document the request authenticates with, then the
+      three the money transaction needs — the campaign, the idempotency key,
+      and the user's balance. The task itself is served from the shared
+      campaign cache, and the duplicate check was removed because the
+      transaction's own completion document already refuses a second one.
+
+      Five writes, and each is a different fact that has to survive a crash:
+      the campaign's spent budget, the ledger entry, the idempotency key that
+      makes paying twice impossible, the user's balance and counters (one
+      update, not two), and the completion record that stops them claiming it
+      again. There is no sixth, and none of the five can be dropped without
+      giving up a guarantee about money.
+    */
+    for (const [index, cost] of costs.entries()) {
+      expect(cost.reads, `completion ${String(index)} reads`).toBeLessThanOrEqual(4);
+      expect(cost.writes, `completion ${String(index)} writes`).toBeLessThanOrEqual(5);
+    }
+
+    // The last one costs exactly what the first one did.
+    expect(costs.at(-1)).toEqual(costs[0]);
+  });
+
+  it('does not make the dashboard more expensive for someone who earned a lot', async () => {
+    const token = await signInWithPin(910_200);
+    for (let index = 0; index < 15; index += 1) seedTelegramTask(`d${String(index)}`);
+    invalidateTaskCache();
+
+    store.resetMetrics();
+    await request(app).get('/auth/session').set('authorization', `Bearer ${token}`);
+    const fresh = store.metrics.reads;
+
+    for (let index = 0; index < 15; index += 1) {
+      await request(app)
+        .post(`/tasks/d${String(index)}/complete`)
+        .set('authorization', `Bearer ${token}`)
+        .send({ dwellSeconds: 5 });
+    }
+
+    clearUserCache();
+    store.resetMetrics();
+    await request(app).get('/auth/session').set('authorization', `Bearer ${token}`);
+
+    /*
+      The same price after fifteen rewards as before the first. Today's
+      earnings are kept on the user document by the ledger as it credits, so
+      the dashboard no longer reads the credits back to add them up.
+    */
+    expect(store.metrics.reads).toBeLessThanOrEqual(fresh + 1);
+    expect(store.metrics.writes).toBe(0);
+  });
+
+  it('serves a repeated task list for nothing at all', async () => {
+    const token = await signInWithPin(910_300);
+    for (let index = 0; index < 10; index += 1) seedTelegramTask(`e${String(index)}`);
+    invalidateTaskCache();
+
+    await request(app).get('/tasks').set('authorization', `Bearer ${token}`);
+
+    /*
+      The Mini App reloads this every time it comes back to the foreground,
+      and the answer does not change until the user does something. The second
+      and third looks are free.
+    */
+    for (const attempt of [1, 2]) {
+      store.resetMetrics();
+      await request(app).get('/tasks').set('authorization', `Bearer ${token}`);
+      expect(store.metrics.reads, `look ${String(attempt)}`).toBe(0);
+      expect(store.metrics.writes, `look ${String(attempt)}`).toBe(0);
+    }
+  });
+
+  it('shows a completed task as completed the moment it is completed', async () => {
+    const token = await signInWithPin(910_400);
+    seedTelegramTask('f0');
+    invalidateTaskCache();
+
+    const before = await request(app).get('/tasks').set('authorization', `Bearer ${token}`);
+    expect(before.body.data.tasks[0].userState).toBe('AVAILABLE');
+
+    await request(app)
+      .post('/tasks/f0/complete')
+      .set('authorization', `Bearer ${token}`)
+      .send({ dwellSeconds: 5 });
+
+    // The cache above must not be allowed to answer this.
+    const after = await request(app).get('/tasks').set('authorization', `Bearer ${token}`);
+    expect(after.body.data.tasks[0].userState).toBe('COMPLETED');
   });
 });

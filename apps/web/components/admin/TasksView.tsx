@@ -292,10 +292,27 @@ export function TasksView() {
             void load();
             void refreshDashboard();
           }}
+          onDeleted={(message) => {
+            setEditing(null);
+            setNotice(message);
+            void load();
+            void refreshDashboard();
+          }}
         />
       )}
     </div>
   );
+}
+
+/**
+ * The verification a category implies.
+ *
+ * Only a Telegram task can be verified by Telegram membership: everything
+ * else needs a person or a model to look at a screenshot. Honour and manual
+ * review stay available, they are just never the default.
+ */
+function defaultVerificationFor(category: TaskCategory): VerificationMethod {
+  return category === 'TELEGRAM' ? 'TELEGRAM_MEMBERSHIP' : 'SCREENSHOT';
 }
 
 function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
@@ -305,6 +322,8 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
   const [instructions, setInstructions] = useState('');
   const [category, setCategory] = useState<TaskCategory>('TELEGRAM');
   const [verification, setVerification] = useState<VerificationMethod>('TELEGRAM_MEMBERSHIP');
+  /** Once an admin picks a verification themselves, the category stops moving it. */
+  const [verificationTouched, setVerificationTouched] = useState(false);
   const [reward, setReward] = useState('');
   const [budget, setBudget] = useState('');
   const [targetUrl, setTargetUrl] = useState('');
@@ -345,7 +364,11 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
         ...(slug.trim() ? { slug: slug.trim().toLowerCase() } : {}),
         ...(targetUrl.trim() ? { targetUrl: targetUrl.trim() } : {}),
         ...(reviewCriteria.trim() ? { reviewCriteria: reviewCriteria.trim() } : {}),
-        ...(chatId.trim() ? { telegramChatId: chatId.trim() } : {}),
+        // Never sent for a task Telegram does not verify: a stray chat id
+        // is what triggers the "bot is not an administrator" probe.
+        ...(verification === 'TELEGRAM_MEMBERSHIP' && chatId.trim()
+          ? { telegramChatId: chatId.trim() }
+          : {}),
         ...(sponsorName.trim() ? { sponsorName: sponsorName.trim() } : {}),
       });
       onCreated();
@@ -448,7 +471,19 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
           <AdminField label="Category">
             <select
               value={category}
-              onChange={(event) => setCategory(event.target.value as TaskCategory)}
+              onChange={(event) => {
+                const next = event.target.value as TaskCategory;
+                setCategory(next);
+                /*
+                  Verification follows the category unless it has been set by
+                  hand. Choosing "Social" and leaving the default of Telegram
+                  membership asked for a chat id that a task about X or
+                  Instagram does not have — and then warned that the bot was
+                  not an administrator of it. The two fields describe the same
+                  decision, so one should move the other.
+                */
+                if (!verificationTouched) setVerification(defaultVerificationFor(next));
+              }}
               style={adminInputStyle}
             >
               {Object.entries(TASK_CATEGORY_LABELS).map(([value, label]) => (
@@ -469,7 +504,10 @@ function CreateTaskForm({ onCreated }: { onCreated: () => void }) {
           >
             <select
               value={verification}
-              onChange={(event) => setVerification(event.target.value as VerificationMethod)}
+              onChange={(event) => {
+                setVerificationTouched(true);
+                setVerification(event.target.value as VerificationMethod);
+              }}
               style={adminInputStyle}
             >
               {Object.entries(VERIFICATION_LABELS).map(([value, label]) => (
@@ -636,8 +674,20 @@ const exhaustedNoteStyle: React.CSSProperties = {
  * field it rendered will happily overwrite something another admin changed
  * while it sat open.
  */
-function EditTaskForm({ task, onDone }: { task: Task; onDone: (message: string) => void }) {
+function EditTaskForm({
+  task,
+  onDone,
+  onDeleted,
+}: {
+  task: Task;
+  onDone: (message: string) => void;
+  onDeleted: (message: string) => void;
+}) {
   const [patch, setPatch] = useState<Record<string, unknown>>({});
+  /** Mirrors the select, so the fields that only apply to one rule can hide. */
+  const [verification, setVerification] = useState<VerificationMethod>(task.verification);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [topUp, setTopUp] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -674,6 +724,22 @@ function EditTaskForm({ task, onDone }: { task: Task; onDone: (message: string) 
       setBusy(false);
     }
   }, [task, patch, touched, topUpKobo, onDone]);
+
+  const remove = useCallback(async () => {
+    setDeleting(true);
+    setError(null);
+    try {
+      await api.delete(`/admin/tasks/${task.id}`);
+      onDeleted(`"${task.title}" deleted.`);
+    } catch (caught) {
+      // The server refuses while submissions are still waiting; its message
+      // says which, so it is shown as it is rather than summarised.
+      setError(errorMessage(caught));
+      setConfirmingDelete(false);
+    } finally {
+      setDeleting(false);
+    }
+  }, [task, onDeleted]);
 
   const textField = (field: keyof Task, label: string, current: string, hint?: string) => (
     <AdminField label={label} hint={fieldErrors[field] ?? hint}>
@@ -773,7 +839,10 @@ function EditTaskForm({ task, onDone }: { task: Task; onDone: (message: string) 
             <select
               defaultValue={task.verification}
               disabled={task.pendingCount > 0}
-              onChange={(event) => set('verification', event.target.value)}
+              onChange={(event) => {
+                set('verification', event.target.value);
+                setVerification(event.target.value as VerificationMethod);
+              }}
               style={adminInputStyle}
             >
               {Object.entries(VERIFICATION_LABELS).map(([value, label]) => (
@@ -815,20 +884,22 @@ function EditTaskForm({ task, onDone }: { task: Task; onDone: (message: string) 
           </AdminField>
         </div>
 
-        <AdminField
-          label="What must the screenshot show?"
-          hint={
-            fieldErrors.reviewCriteria ??
-            'The automatic reviewer judges against this. Vague in, vague out.'
-          }
-        >
-          <textarea
-            defaultValue={task.reviewCriteria ?? ''}
-            onChange={(event) => set('reviewCriteria', event.target.value || null)}
-            rows={2}
-            style={{ ...adminInputStyle, minHeight: 56, padding: 10, resize: 'vertical' }}
-          />
-        </AdminField>
+        {verification === 'SCREENSHOT' && (
+          <AdminField
+            label="What must the screenshot show?"
+            hint={
+              fieldErrors.reviewCriteria ??
+              'The automatic reviewer judges against this. Vague in, vague out.'
+            }
+          >
+            <textarea
+              defaultValue={task.reviewCriteria ?? ''}
+              onChange={(event) => set('reviewCriteria', event.target.value || null)}
+              rows={2}
+              style={{ ...adminInputStyle, minHeight: 56, padding: 10, resize: 'vertical' }}
+            />
+          </AdminField>
+        )}
 
         <AdminField
           label="Where the task sends people"
@@ -848,13 +919,29 @@ function EditTaskForm({ task, onDone }: { task: Task; onDone: (message: string) 
             gap: 12,
           }}
         >
-          <AdminField label="Telegram chat" hint={fieldErrors.telegramChatId}>
-            <input
-              defaultValue={task.telegramChatLabel ?? ''}
-              onChange={(event) => set('telegramChatId', event.target.value || null)}
-              style={adminInputStyle}
-            />
-          </AdminField>
+          {verification === 'TELEGRAM_MEMBERSHIP' && (
+            <AdminField
+              label="Telegram chat"
+              hint={
+                fieldErrors.telegramChatId ??
+                /*
+                  The id, never the label. This used to show
+                  `telegramChatLabel` — the human title Telegram reports —
+                  while saving whatever was in it as the chat id, so editing
+                  anything else on the form quietly replaced a working
+                  `@fundxtra` with "Fundxtra Announcements" and broke
+                  verification for the whole campaign.
+                */
+                (task.telegramChatLabel ? `Currently: ${task.telegramChatLabel}` : '@name or -100… id')
+              }
+            >
+              <input
+                defaultValue={task.telegramChatId ?? ''}
+                onChange={(event) => set('telegramChatId', event.target.value || null)}
+                style={adminInputStyle}
+              />
+            </AdminField>
+          )}
 
           <AdminField label="Sponsor" hint={fieldErrors.sponsorName}>
             <input
@@ -903,6 +990,36 @@ function EditTaskForm({ task, onDone }: { task: Task; onDone: (message: string) 
         >
           {!touched && !(topUpKobo !== null && topUpKobo > 0) ? 'Nothing changed yet' : 'Save changes'}
         </AdminButton>
+
+        <hr style={{ border: 'none', borderTop: `1px solid ${tokens.semantic.divider}`, margin: '6px 0 0' }} />
+
+        {/*
+          Deletion is last, behind a confirm, and says what it will and will
+          not take with it. People who were already paid keep their history —
+          every transaction carries its own description — but the campaign and
+          its numbers are gone for good.
+        */}
+        {confirmingDelete ? (
+          <div style={{ display: 'grid', gap: 8 }}>
+            <p style={{ fontSize: tokens.typography.size.xs, color: tokens.colors.danger.strong }}>
+              Delete <strong>{task.title}</strong> permanently? It disappears from the app and from
+              this list, and the campaign&rsquo;s own figures go with it. Anyone already paid keeps
+              their reward and their history. This cannot be undone.
+            </p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <AdminButton tone="danger" loading={deleting} onClick={() => void remove()}>
+                Yes, delete it
+              </AdminButton>
+              <AdminButton onClick={() => setConfirmingDelete(false)} disabled={deleting}>
+                Keep it
+              </AdminButton>
+            </div>
+          </div>
+        ) : (
+          <AdminButton tone="danger" onClick={() => setConfirmingDelete(true)}>
+            Delete this task permanently
+          </AdminButton>
+        )}
       </div>
     </AdminCard>
   );

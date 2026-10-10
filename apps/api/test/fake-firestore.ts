@@ -181,18 +181,42 @@ export class ContentionError extends Error {
   }
 }
 
+/**
+ * Raised when a transaction reads after it has written.
+ *
+ * Firestore's server SDK enforces this and the real error is a plain `Error`,
+ * which reaches a user as "Something went wrong" — the least diagnosable
+ * failure there is. It was shipped twice, in the two transactions that pay
+ * people, because this double did not enforce the rule and every test passed.
+ */
+export class ReadAfterWriteError extends Error {
+  constructor(path: string) {
+    super(
+      `Firestore transactions require all reads to be executed before all writes (read of ${path} after a write)`,
+    );
+    this.name = 'ReadAfterWriteError';
+  }
+}
+
 class FakeTransaction {
   private readonly writes: Write[] = [];
   private readonly readVersions = new Map<string, number>();
 
   constructor(private readonly store: FakeFirestore) {}
 
+  /** Every read is refused once anything has been written. See above. */
+  private assertNoWritesYet(path: string): void {
+    if (this.writes.length > 0) throw new ReadAfterWriteError(path);
+  }
+
   async get(target: FakeDocumentReference | FakeQuery): Promise<never | FakeDocumentSnapshot | { docs: FakeDocumentSnapshot[]; empty: boolean; size: number }> {
     if (target instanceof FakeDocumentReference) {
+      this.assertNoWritesYet(target.path);
       const stored = this.store.read(target.path);
       this.readVersions.set(target.path, stored?.version ?? 0);
       return new FakeDocumentSnapshot(target.id, target, stored);
     }
+    this.assertNoWritesYet(target.collectionPath);
     const docs = this.store.query(target);
     for (const doc of docs) {
       this.readVersions.set(doc.ref.path, this.store.read(doc.ref.path)?.version ?? 0);
@@ -223,7 +247,11 @@ class FakeTransaction {
   /** Validate the read set is unchanged, then apply every buffered write. */
   commitOrThrow(): void {
     for (const [path, version] of this.readVersions) {
-      if ((this.store.read(path)?.version ?? 0) !== version) throw new ContentionError();
+      const now = this.store.peek(path)?.version ?? 0;
+      if (now !== version) {
+        if (process.env.FX_TX_DEBUG) console.log('CONTENTION on', path, version, '->', now);
+        throw new ContentionError();
+      }
     }
     this.store.commit(this.writes);
   }
@@ -276,9 +304,12 @@ export class FakeFirestore {
    * counting.
    */
   metrics = { reads: 0, writes: 0 };
+  /** Every path read since the last reset. For diagnosing a read budget. */
+  readLog: string[] = [];
 
   resetMetrics(): void {
     this.metrics = { reads: 0, writes: 0 };
+    this.readLog = [];
   }
 
   settings(): void {
@@ -296,6 +327,7 @@ export class FakeFirestore {
 
   read(path: string): Stored | undefined {
     this.metrics.reads += 1;
+    this.readLog.push(path);
     return this.documents.get(path);
   }
 
@@ -362,6 +394,7 @@ export class FakeFirestore {
     const docs = evaluateQuery(this, this.documents, spec);
     // Firestore bills a minimum of one read for a query that matches nothing.
     this.metrics.reads += Math.max(1, docs.length);
+    this.readLog.push(`query:${spec.collectionPath}`);
     return docs;
   }
 

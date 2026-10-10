@@ -40,7 +40,8 @@ interface ReferralPayload {
   referrals: ReferralRow[];
   qualification: string[];
   enabled: boolean;
-  codeClaim: { available: boolean; bonusKobo: number };
+  /** Optional on the wire: an older API, or a client older than a deploy. */
+  codeClaim?: { available: boolean; bonusKobo: number } | undefined;
 }
 
 /**
@@ -111,7 +112,7 @@ export function ReferPanel() {
         Shown only while it can still be used. A box offering money that
         refuses everything you type is worse than no box.
       */}
-      {codeClaim.available && (
+      {codeClaim?.available && (
         <ClaimCodeCard
           bonusKobo={codeClaim.bonusKobo}
           onClaimed={() => {

@@ -9,15 +9,11 @@ import {
 import { getSettings } from './settings';
 import { isPrimaryAdmin } from './admins';
 import { channelInvite, channelMembership } from './channel';
-import {
-  answerCallbackQuery,
-  editPhotoCaption,
-  sendBotMessage,
-  type ReplyMarkup,
-} from '../lib/telegram-bot';
+import { answerCallbackQuery, sendBotMessage, type ReplyMarkup } from '../lib/telegram-bot';
 import { logger } from '../lib/logger';
 import { env, miniAppUrl } from '../config/env';
 import { reviewSubmission } from './completions';
+import { rememberEscalation } from './review-escalation';
 import { findUser } from './users';
 
 /**
@@ -379,33 +375,33 @@ async function handleReviewTap(query: TelegramCallbackQuery): Promise<void> {
 
   const approve = action === 'a';
 
+  /*
+    Register the card before deciding, so the close-out below happens through
+    the same path as a decision made in the admin console. After a restart the
+    registry is empty and this is the only place that still knows which
+    message is showing this submission.
+  */
+  const chatId = query.message?.chat?.id;
+  const messageId = query.message?.message_id;
+  if (chatId !== undefined && messageId !== undefined) {
+    rememberEscalation(submissionId, String(chatId), messageId);
+  }
+
   try {
-    const outcome = await reviewSubmission({
+    await reviewSubmission({
       submissionId,
       decision: approve ? 'APPROVE' : 'REJECT',
       reviewerId: tapperId,
       reason: approve ? undefined : 'Reviewed by the Fundxtra team.',
     });
 
-    await answerCallbackQuery(query.id, approve ? 'Approved and paid' : 'Rejected');
-
     /*
-      The caption is rewritten and the buttons removed, so the same submission
-      cannot be decided twice by scrolling back to an old message. The service
-      would refuse the second attempt anyway, but a button that still looks
-      live is a button somebody presses.
+      The caption is rewritten and the buttons removed by `reviewSubmission`
+      itself, so the same submission cannot be decided twice by scrolling back
+      to an old message. The service would refuse the second attempt anyway,
+      but a button that still looks live is a button somebody presses.
     */
-    const chatId = query.message?.chat?.id;
-    const messageId = query.message?.message_id;
-    if (chatId !== undefined && messageId !== undefined) {
-      await editPhotoCaption({
-        chatId: String(chatId),
-        messageId,
-        caption: approve
-          ? `✅ <b>Approved</b> — ${formatNaira(outcome.rewardKobo)} paid to the user.`
-          : '❌ <b>Rejected</b> — nothing was deducted, and the user has been told.',
-      });
-    }
+    await answerCallbackQuery(query.id, approve ? 'Approved and paid' : 'Rejected');
   } catch (error) {
     logger.warn({ err: error, submissionId }, 'Review tap could not be applied');
     // Most likely somebody already decided it in the admin console.

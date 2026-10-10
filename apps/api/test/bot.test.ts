@@ -79,6 +79,7 @@ vi.mock('../src/services/completions', () => ({
 const { createApp } = await import('../src/app');
 const { invalidateSettingsCache } = await import('../src/services/settings');
 const { clearChannelCache } = await import('../src/services/channel');
+const { peekEscalation } = await import('../src/services/review-escalation');
 const app = createApp();
 
 /** The secret the route expects, derived exactly as the server derives it. */
@@ -277,6 +278,9 @@ describe('review buttons in Telegram', () => {
     };
   }
 
+  /** Which Telegram message the service now knows is showing a submission. */
+  const escalationFor = (submissionId: string) => peekEscalation(submissionId);
+
   beforeEach(() => {
     answered.length = 0;
     captions.length = 0;
@@ -293,8 +297,15 @@ describe('review buttons in Telegram', () => {
     expect(decided).toEqual([
       { submissionId: 'sub-1', decision: 'APPROVE', reviewerId: '6438544386', reason: undefined },
     ]);
-    // The buttons are taken away, so the same one cannot be tapped twice.
-    expect(captions[0]).toContain('Approved');
+    expect(answered[0]?.text).toContain('Approved');
+    /*
+      The caption rewrite is no longer done here. It moved into the review
+      service, so that a decision made in the admin console closes the
+      Telegram card too — see the escalation tests in api.test.ts. What this
+      has to prove is that the tap registered which message is showing the
+      submission, which is what lets the service find it.
+    */
+    expect(escalationFor('sub-1')).toEqual({ chatId: '6438544386', messageId: 55 });
   });
 
   it('rejects when the owner taps reject', async () => {
@@ -304,7 +315,8 @@ describe('review buttons in Telegram', () => {
       .send(tap('rev:r:sub-2', 6_438_544_386));
 
     expect(decided[0]?.decision).toBe('REJECT');
-    expect(captions[0]).toContain('nothing was deducted');
+    expect(answered[0]?.text).toContain('Rejected');
+    expect(escalationFor('sub-2')).toEqual({ chatId: '6438544386', messageId: 55 });
   });
 
   it('refuses anyone who is not the owner', async () => {

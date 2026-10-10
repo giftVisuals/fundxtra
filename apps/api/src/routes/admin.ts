@@ -56,12 +56,14 @@ import { getSettings, updateSettings } from '../services/settings';
 import { recomputeStats } from '../services/stats';
 import {
   createTask,
+  deleteTask,
   listAllTasks,
   requireTask,
   setTaskStatus,
   topUpBudget,
   updateTask,
 } from '../services/tasks';
+import { reviewerStatus } from '../services/screenshot-review';
 import { fetchProof, signedProofUrl } from '../services/uploads';
 import { buildOwnerBrief, formatOwnerBrief } from '../services/briefing';
 import { clearFlag, requireUser } from '../services/users';
@@ -119,6 +121,16 @@ adminRouter.get('/dashboard', requirePermission('users:view'), async (req, res, 
           hasCredentials: nasfampay.hasCredentials,
           note: 'NasfamPay public API is still in development. Rewards stay "coming soon" until it launches.',
         },
+      },
+      /*
+        Why screenshots are, or are not, being decided automatically. Every
+        failure in the reviewer ends as "escalate to a person", which is
+        correct and completely invisible — so the reason is reported here
+        rather than left to be inferred from a growing queue.
+      */
+      autoReview: {
+        ...reviewerStatus(),
+        enabled: settings.tasks.autoReviewEnabled,
       },
       environment: {
         nodeEnv: env.NODE_ENV,
@@ -383,6 +395,45 @@ adminRouter.post(
         ip: req.clientIp,
       });
       ok(res, { task });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * Delete a campaign for good.
+ *
+ * Separate from pausing, and audited with the full campaign recorded in
+ * `before`, because this is the one task action that cannot be undone from
+ * the console. What it refuses — a task with submissions still under review —
+ * is enforced in the service; see services/tasks.ts.
+ */
+adminRouter.delete(
+  '/tasks/:taskId',
+  requirePermission('tasks:manage'),
+  async (req, res, next) => {
+    try {
+      const taskId = pathParam(req, 'taskId');
+      const task = await deleteTask(taskId);
+
+      await recordAudit({
+        action: 'TASK_DELETED',
+        actor: req.admin!,
+        targetType: 'task',
+        targetId: taskId,
+        summary: `Deleted "${task.title}" permanently`,
+        before: {
+          title: task.title,
+          rewardKobo: task.rewardKobo,
+          budgetKobo: task.budgetKobo,
+          spentKobo: task.spentKobo,
+          completionCount: task.completionCount,
+          status: task.status,
+        },
+        ip: req.clientIp,
+      });
+      ok(res, { deleted: true, taskId });
     } catch (error) {
       next(error);
     }

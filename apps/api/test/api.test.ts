@@ -39,11 +39,20 @@ let membership: { state: string; status?: string; adminMessage?: string } = {
   status: 'member',
 };
 
+/** Captions the bot rewrote on escalation cards. */
+const captions: { chatId: string; messageId: number; caption: string }[] = [];
+
 vi.mock('../src/lib/telegram-bot', () => ({
   checkChatMembership: async () => membership,
   probeChatAccess: async () => ({ ok: true, title: 'Fundxtra Channel', warning: null }),
   notifyUser: async () => true,
   getBotIdentity: async () => null,
+  sendBotMessage: async () => true,
+  sendBotPhoto: async () => ({ message_id: 7 }),
+  editPhotoCaption: async (options: { chatId: string; messageId: number; caption: string }) => {
+    captions.push(options);
+    return true;
+  },
 }));
 
 const { createApp } = await import('../src/app');
@@ -52,6 +61,7 @@ const { invalidateSettingsCache } = await import('../src/services/settings');
 const { clearChannelCache } = await import('../src/services/channel');
 const { clearAdminCache } = await import('../src/services/admins');
 const { rateLimiter } = await import('../src/lib/rate-limit');
+const { rememberEscalation } = await import('../src/services/review-escalation');
 
 let app: ReturnType<typeof createApp>;
 
@@ -72,6 +82,7 @@ beforeEach(() => {
   // Every test signs in, and the whole suite shares one IP: without this the
   // later tests fail on the sign-in rate limit rather than on their subject.
   rateLimiter.resetAll();
+  captions.length = 0;
 });
 
 /** Flip maintenance mode, the way an admin does from Settings. */
@@ -602,6 +613,195 @@ describe('channel gate', () => {
       in front of the whole platform did not put a read in front of it.
     */
     expect(store.metrics.reads).toBe(1);
+  });
+});
+
+/**
+ * Completion, end to end over HTTP.
+ *
+ * The first test here is the one that matters most: for a long time every
+ * Telegram-verified and honour-based completion failed in production with
+ * "Something went wrong", because the transaction read after it had written
+ * and the real Firestore refuses that. The test double did not, so the whole
+ * suite passed while nobody could claim a reward. The double enforces the
+ * rule now; this keeps a user-visible assertion on top of it.
+ */
+describe('claiming a reward', () => {
+  function seedTask(id: string, patch: Record<string, unknown> = {}) {
+    store.seed('tasks', id, {
+      title: 'Join the Fundxtra channel', description: 'Join it and come back.',
+      instructions: ['Join'], category: 'TELEGRAM', status: 'ACTIVE',
+      verification: 'TELEGRAM_MEMBERSHIP', requiresProof: false,
+      rewardKobo: 5_000, budgetKobo: 100_000, spentKobo: 0,
+      maxCompletions: 20, completionCount: 0, pendingCount: 0, perUserLimit: 1,
+      targetUrl: null, telegramChatId: '@fundxtra', telegramChatLabel: 'Fundxtra',
+      verificationWarning: null, reviewCriteria: null, sponsor: null,
+      startsAt: null, endsAt: null, minimumDwellSeconds: 0, sortWeight: 100,
+      createdBy: 'admin', createdAt: new Date(), updatedAt: new Date(),
+      ...patch,
+    });
+  }
+
+  it('pays a Telegram-verified task instead of failing with a 500', async () => {
+    const user = await signInWithPin(558_001);
+    seedTask('join-us');
+
+    const response = await request(app)
+      .post('/tasks/join-us/complete')
+      .set('authorization', `Bearer ${user.token}`)
+      .send({ dwellSeconds: 12 });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.state).toBe('CREDITED');
+    expect(response.body.data.rewardKobo).toBe(5_000);
+    expect(store.snapshot()[`users/${user.user.id}`]?.balanceKobo).toBe(5_000);
+    // The budget moved with the money, in the same transaction.
+    expect(store.snapshot()['tasks/join-us']?.spentKobo).toBe(5_000);
+    expect(store.snapshot()['tasks/join-us']?.completionCount).toBe(1);
+  });
+
+  it('refuses a second claim on the same task', async () => {
+    const user = await signInWithPin(558_002);
+    seedTask('join-twice');
+
+    const first = await request(app)
+      .post('/tasks/join-twice/complete')
+      .set('authorization', `Bearer ${user.token}`)
+      .send({ dwellSeconds: 12 });
+    expect(first.status).toBe(200);
+
+    const second = await request(app)
+      .post('/tasks/join-twice/complete')
+      .set('authorization', `Bearer ${user.token}`)
+      .send({ dwellSeconds: 12 });
+    expect(second.status).toBe(409);
+    expect(store.snapshot()[`users/${user.user.id}`]?.balanceKobo).toBe(5_000);
+  });
+});
+
+/**
+ * Deciding a submission closes the Telegram card that asked about it.
+ *
+ * A "needs your eyes" message still showing live buttons under something
+ * already approved is noise at best, and at worst an invitation to tap it.
+ */
+describe('escalation cards', () => {
+  it('rewrites the card when the submission is approved in the console', async () => {
+    const owner = await signInWithPin(6_438_544_386, '8351', { username: 'giftvisuals' });
+    const user = await signInWithPin(559_001);
+
+    store.seed('tasks', 'shot-task', {
+      title: 'Follow on X', description: 'Follow and screenshot.',
+      instructions: ['Follow'], category: 'SOCIAL', status: 'ACTIVE',
+      verification: 'SCREENSHOT', requiresProof: true,
+      rewardKobo: 4_000, budgetKobo: 100_000, spentKobo: 4_000,
+      maxCompletions: 25, completionCount: 0, pendingCount: 1, perUserLimit: 1,
+      targetUrl: null, telegramChatId: null, telegramChatLabel: null,
+      verificationWarning: null, reviewCriteria: 'The Following button', sponsor: null,
+      startsAt: null, endsAt: null, minimumDwellSeconds: 0, sortWeight: 100,
+      createdBy: 'admin', createdAt: new Date(), updatedAt: new Date(),
+    });
+    store.seed('taskSubmissions', 'sub-escalated', {
+      taskId: 'shot-task', taskTitle: 'Follow on X',
+      userId: user.user.id, userTelegramId: user.user.id, username: null,
+      status: 'PENDING_REVIEW', rewardKobo: 4_000,
+      proofPath: 'https://i.ibb.co/x/y.png', answer: null,
+      reviewedBy: null, reviewedAt: null, rejectionReason: null, transactionId: null,
+      submittedAt: new Date(),
+    });
+
+    // The reviewer was unsure and sent it to the owner's Telegram.
+    rememberEscalation('sub-escalated', '6438544386', 991);
+
+    const approved = await request(app)
+      .post('/admin/submissions/sub-escalated/review')
+      .set('authorization', `Bearer ${owner.token}`)
+      .send({ decision: 'APPROVE' });
+    expect(approved.status).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(captions).toHaveLength(1);
+    expect(captions[0]?.messageId).toBe(991);
+    expect(captions[0]?.caption).toContain('Approved');
+    expect(captions[0]?.caption).toContain('₦40');
+  });
+});
+
+/**
+ * Deleting a campaign.
+ *
+ * Permanent, so what it refuses matters as much as what it does: a task with
+ * someone's submission still waiting on an answer holds reserved budget and a
+ * user expecting a decision.
+ */
+describe('deleting a task', () => {
+  function seedTask(id: string, patch: Record<string, unknown> = {}) {
+    store.seed('tasks', id, {
+      title: 'A mistake', description: 'Created by accident.',
+      instructions: ['x'], category: 'OTHER', status: 'DRAFT',
+      verification: 'HONOUR', requiresProof: false,
+      rewardKobo: 1_000, budgetKobo: 10_000, spentKobo: 0,
+      maxCompletions: 10, completionCount: 0, pendingCount: 0, perUserLimit: 1,
+      targetUrl: null, telegramChatId: null, telegramChatLabel: null,
+      verificationWarning: null, reviewCriteria: null, sponsor: null,
+      startsAt: null, endsAt: null, minimumDwellSeconds: 0, sortWeight: 100,
+      createdBy: 'admin', createdAt: new Date(), updatedAt: new Date(),
+      ...patch,
+    });
+  }
+
+  it('removes it for good, and writes an audit row', async () => {
+    const owner = await signInWithPin(6_438_544_386, '8351', { username: 'giftvisuals' });
+    seedTask('typo-task');
+
+    const response = await request(app)
+      .delete('/admin/tasks/typo-task')
+      .set('authorization', `Bearer ${owner.token}`);
+
+    expect(response.status).toBe(200);
+    expect(store.snapshot()['tasks/typo-task']).toBeUndefined();
+
+    const audited = Object.entries(store.snapshot()).filter(
+      ([path, row]) => path.startsWith('auditLogs/') && row.action === 'TASK_DELETED',
+    );
+    expect(audited).toHaveLength(1);
+  });
+
+  it('refuses while a submission is still waiting on review', async () => {
+    const owner = await signInWithPin(6_438_544_386, '8351', { username: 'giftvisuals' });
+    seedTask('busy-task', { verification: 'SCREENSHOT', pendingCount: 1, spentKobo: 1_000 });
+    store.seed('taskSubmissions', 'sub-waiting', {
+      taskId: 'busy-task', taskTitle: 'A mistake', userId: '1', userTelegramId: '1',
+      username: null, status: 'PENDING_REVIEW', rewardKobo: 1_000,
+      proofPath: null, answer: null, reviewedBy: null, reviewedAt: null,
+      rejectionReason: null, transactionId: null, submittedAt: new Date(),
+    });
+
+    const response = await request(app)
+      .delete('/admin/tasks/busy-task')
+      .set('authorization', `Bearer ${owner.token}`);
+
+    expect(response.status).toBe(422);
+    expect(response.body.error.message).toContain('waiting on review');
+    expect(store.snapshot()['tasks/busy-task']).toBeDefined();
+  });
+
+  it('is refused to a moderator', async () => {
+    const owner = await signInWithPin(6_438_544_386, '8351', { username: 'giftvisuals' });
+    await request(app)
+      .post('/admin/admins')
+      .set('authorization', `Bearer ${owner.token}`)
+      .send({ telegramId: '559900', displayName: 'Ops', role: 'MODERATOR', extraPermissions: [] });
+    seedTask('safe-task');
+
+    const mod = await signInWithPin(559_900, '4729', { username: 'ops' });
+    const response = await request(app)
+      .delete('/admin/tasks/safe-task')
+      .set('authorization', `Bearer ${mod.token}`);
+
+    expect(response.status).toBe(403);
+    expect(store.snapshot()['tasks/safe-task']).toBeDefined();
   });
 });
 

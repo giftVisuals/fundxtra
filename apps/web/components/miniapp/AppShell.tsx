@@ -18,6 +18,7 @@ import { BootLoader, Button, ErrorState } from '@/components/ui';
 import { useSession } from '@/lib/session';
 import { startEarningUrl, supportUrl } from '@/lib/config';
 import { openExternal, useTelegramViewport } from '@/lib/telegram';
+import { PanelBoundary } from './PanelBoundary';
 import { PinGate } from './PinGate';
 import { HomePanel } from './panels/HomePanel';
 import { EarnPanel } from './panels/EarnPanel';
@@ -42,6 +43,15 @@ import { AdminPreviewBanner } from './AdminPreviewBanner';
 
 const TAB_IDS = ['home', 'earn', 'refer', 'wallet', 'profile'] as const;
 type TabId = (typeof TAB_IDS)[number];
+
+/** What to call a tab when telling somebody it failed. */
+const PANEL_NAMES: Record<TabId, string> = {
+  home: 'your home screen',
+  earn: 'the task list',
+  refer: 'your referrals',
+  wallet: 'your wallet',
+  profile: 'your profile',
+};
 
 function isTabId(value: string): value is TabId {
   return (TAB_IDS as readonly string[]).includes(value);
@@ -168,11 +178,17 @@ export function AppShell() {
         }}
       >
         <SwipeablePanels ids={[...TAB_IDS]} activeId={activeTab} onChange={changeTab}>
-          {activeTab === 'home' && <HomePanel onNavigate={changeTab} />}
-          {activeTab === 'earn' && <EarnPanel />}
-          {activeTab === 'refer' && <ReferPanel />}
-          {activeTab === 'wallet' && <WalletPanel />}
-          {activeTab === 'profile' && <ProfilePanel />}
+          {/*
+            Keyed on the tab, so a panel that failed is given a clean try the
+            next time it is opened rather than staying broken for the session.
+          */}
+          <PanelBoundary key={activeTab} panel={PANEL_NAMES[activeTab]}>
+            {activeTab === 'home' && <HomePanel onNavigate={changeTab} />}
+            {activeTab === 'earn' && <EarnPanel />}
+            {activeTab === 'refer' && <ReferPanel />}
+            {activeTab === 'wallet' && <WalletPanel />}
+            {activeTab === 'profile' && <ProfilePanel />}
+          </PanelBoundary>
         </SwipeablePanels>
       </main>
 

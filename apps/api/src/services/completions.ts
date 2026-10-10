@@ -19,16 +19,20 @@ import { recordSecurityEvent } from './security';
 import { getSettings } from './settings';
 import { qualifyReferral } from './referrals';
 import { reviewScreenshot, reviewerConfigured } from './screenshot-review';
-import { escalateForReview } from './review-escalation';
+import { closeEscalation, escalateForReview } from './review-escalation';
 import { bumpStats } from './stats';
 import { notifyTaskApproved, notifyTaskRejected } from './notify';
 import { flagUser } from './users';
 import {
+  applyReservationIn,
   commitPendingIn,
+  invalidateUserTaskState,
   completionId,
   mapTask,
+  planReservation,
   releaseBudgetIn,
   requireTask,
+  requireTaskCached,
   reserveBudgetIn,
   taskAvailability,
 } from './tasks';
@@ -73,7 +77,7 @@ export async function completeTask(args: CompleteTaskArgs): Promise<CompletionOu
     throw new AppError(ERROR_CODES.TASK_UNAVAILABLE, { detail: 'task earning is globally paused' });
   }
 
-  const task = await requireTask(args.taskId);
+  const task = await requireTaskCached(args.taskId);
 
   const availability = taskAvailability(task);
   if (!availability.available) {
@@ -129,27 +133,63 @@ export async function completeTask(args: CompleteTaskArgs): Promise<CompletionOu
   }
 }
 
+/**
+ * Refuse a repeat before doing any work — when that is worth a read.
+ *
+ * The guarantee is never this function. It is the deterministic
+ * `taskCompletions/{user}__{task}` document created inside the transaction,
+ * which cannot exist twice: a second attempt aborts the whole transaction and
+ * is reported as TASK_ALREADY_COMPLETED either way. So this is a courtesy,
+ * and a courtesy has to justify its cost.
+ *
+ * For a task decided on the spot and allowed once, it does not: the check
+ * would spend a read on every completion by every user to produce the same
+ * message the transaction produces for free. It is skipped.
+ *
+ * It is kept where the transaction cannot answer in time:
+ *
+ *  - A task that queues for review. A duplicate submission reserves budget
+ *    and costs a reviewer their attention long before any transaction would
+ *    notice, and a user who was already paid for it would be queued again.
+ *  - A task that may be completed more than once, where "how many times" is
+ *    a count and not a document id.
+ */
 async function assertNotAlreadyCompleted(userId: string, task: Task): Promise<void> {
-  const [completions, pending] = await Promise.all([
-    db()
-      .collection(COLLECTIONS.taskCompletions)
-      .where('userId', '==', userId)
-      .where('taskId', '==', task.id)
-      .count()
-      .get(),
-    db()
-      .collection(COLLECTIONS.taskSubmissions)
-      .where('userId', '==', userId)
-      .where('taskId', '==', task.id)
-      .where('status', '==', 'PENDING_REVIEW')
-      .count()
-      .get(),
+  const queues = task.verification === 'SCREENSHOT' || task.verification === 'MANUAL_REVIEW';
+  const repeatable = task.perUserLimit > 1;
+
+  if (!queues && !repeatable) return;
+
+  const [completed, pending] = await Promise.all([
+    repeatable
+      ? db()
+          .collection(COLLECTIONS.taskCompletions)
+          .where('userId', '==', userId)
+          .where('taskId', '==', task.id)
+          .count()
+          .get()
+          .then((result) => result.data().count)
+      : db()
+          .collection(COLLECTIONS.taskCompletions)
+          .doc(completionId(userId, task.id))
+          .get()
+          .then((snapshot) => (snapshot.exists ? 1 : 0)),
+    queues
+      ? db()
+          .collection(COLLECTIONS.taskSubmissions)
+          .where('userId', '==', userId)
+          .where('taskId', '==', task.id)
+          .where('status', '==', 'PENDING_REVIEW')
+          .count()
+          .get()
+          .then((result) => result.data().count)
+      : 0,
   ]);
 
-  if (completions.data().count >= task.perUserLimit) {
+  if (completed >= task.perUserLimit) {
     throw new AppError(ERROR_CODES.TASK_ALREADY_COMPLETED);
   }
-  if (pending.data().count > 0) {
+  if (pending > 0) {
     throw new AppError(ERROR_CODES.TASK_ALREADY_COMPLETED, {
       message: 'Your submission is already waiting for review.',
     });
@@ -239,7 +279,15 @@ async function creditCompletion(
       if (!taskSnapshot.exists) throw notFound('that task');
       const fresh = mapTask(taskSnapshot.id, taskSnapshot.data() ?? {});
 
-      const reservation = reserveBudgetIn(tx, fresh, { pending: false });
+      /*
+        Order matters here, and the real Firestore enforces it: every read
+        must happen before the first write. The budget reservation is planned
+        (no write), the ledger does its reads and writes, and only then is the
+        reservation applied. Written the other way round — which it was — the
+        SDK rejects the whole transaction, and every Telegram-verified and
+        honour-based completion fails with an unexplained 500.
+      */
+      const reservation = planReservation(fresh);
 
       const entry = await postEntryIn(tx, {
         userId: user.id,
@@ -251,7 +299,13 @@ async function creditCompletion(
         // the completion document were somehow absent.
         idempotencyKey: idempotencyKey('task', user.id, fresh.id),
         metadata: { taskId: fresh.id, verification: options.verification },
+        // Folded into the balance update rather than written separately: two
+        // updates to one document is two writes, and this is the document
+        // every single completion touches.
+        alsoSetOnUser: { tasksCompleted: FieldValue.increment(1) },
       });
+
+      applyReservationIn(tx, fresh, reservation, { pending: false });
 
       // The uniqueness constraint. `create` fails if this pair already exists,
       // which aborts the credit above with it.
@@ -265,13 +319,12 @@ async function creditCompletion(
         completedAt: Timestamp.now(),
       });
 
-      tx.update(firestore.collection(COLLECTIONS.users).doc(user.id), {
-        tasksCompleted: FieldValue.increment(1),
-        updatedAt: Timestamp.now(),
-      });
-
       return { reservation, entry };
     });
+
+    // This user's task list just changed; the next open must not be served
+    // the cached copy that still shows this one as available.
+    invalidateUserTaskState(user.id);
 
     bumpStats({
       totalTasksCompleted: 1,
@@ -286,7 +339,7 @@ async function creditCompletion(
     }
 
     // Whoever referred this user has now earned their reward.
-    qualifyReferrerFor(user.id);
+    qualifyReferrerFor(user);
 
     return {
       state: 'CREDITED',
@@ -353,6 +406,7 @@ async function submitForReview(
     return reservation;
   });
 
+  invalidateUserTaskState(user.id);
   logger.info({ submissionId, taskId: task.id, userId: user.id }, 'Task submission queued');
 
   /*
@@ -414,9 +468,16 @@ const AUTO_REVIEWER_ID = 'auto-reviewer';
  * pay a second reward, and a failure here must never roll back the task the
  * user just earned.
  */
-function qualifyReferrerFor(userId: string): void {
-  void qualifyReferral(userId).catch((error: unknown) => {
-    logger.warn({ err: error, userId }, 'Could not qualify a referral after a completed task');
+function qualifyReferrerFor(user: Pick<User, 'id' | 'referredBy' | 'tasksCompleted'>): void {
+  /*
+    Nobody referred them, or they have already completed something — either
+    way there is no first completion to qualify, and the reads to find that
+    out would be spent on every completion by every user forever.
+  */
+  if (!user.referredBy || user.tasksCompleted > 0) return;
+
+  void qualifyReferral(user.id).catch((error: unknown) => {
+    logger.warn({ err: error, userId: user.id }, 'Could not qualify a referral after a completed task');
   });
 }
 
@@ -525,6 +586,7 @@ export async function reviewSubmission(input: {
         idempotencyKey: idempotencyKey('task', submission.userId, submission.taskId),
         actorAdminId: input.reviewerId,
         metadata: { taskId: submission.taskId, submissionId: submission.id, verification: 'REVIEWED' },
+        alsoSetOnUser: { tasksCompleted: FieldValue.increment(1) },
       });
 
       tx.create(
@@ -541,11 +603,6 @@ export async function reviewSubmission(input: {
       );
 
       commitPendingIn(tx, submission.taskId);
-
-      tx.update(firestore.collection(COLLECTIONS.users).doc(submission.userId), {
-        tasksCompleted: FieldValue.increment(1),
-        updatedAt: now,
-      });
 
       tx.update(submissionRef, {
         status: 'APPROVED' as SubmissionStatus,
@@ -566,17 +623,40 @@ export async function reviewSubmission(input: {
       };
     });
 
+    invalidateUserTaskState(result.userId);
+
     if (result.status === 'APPROVED') {
       bumpStats({ totalTasksCompleted: 1, totalRewardsEarnedKobo: result.rewardKobo });
     }
+
+    /*
+      If this submission was sitting in the owner's Telegram asking to be
+      decided, it has now been decided — wherever that happened. Close the
+      card so the chat shows the outcome instead of two live buttons under
+      something already settled.
+    */
+    void closeEscalation(input.submissionId, {
+      approved: result.status === 'APPROVED',
+      rewardKobo: result.rewardKobo,
+    });
 
     /*
       Told after the decision has committed. A rejection is notified too: a
       submission that silently never resolves is the review experience users
       complain about, and the message says plainly that nothing was deducted.
     */
-    // An approved screenshot is an earning, so it qualifies the referral too.
-    if (result.status === 'APPROVED') qualifyReferrerFor(result.userId);
+    /*
+      An approved screenshot is an earning, so it qualifies the referral too.
+      The short-circuit the credit path uses needs the user's own counters,
+      which this path does not hold — so it asks the referral service, which
+      refuses anything but a PENDING referral in one read and writes nothing
+      when there is none.
+    */
+    if (result.status === 'APPROVED') {
+      void qualifyReferral(result.userId).catch((error: unknown) => {
+        logger.warn({ err: error, userId: result.userId }, 'Could not qualify a referral');
+      });
+    }
 
     if (result.telegramId) {
       if (result.status === 'APPROVED') {

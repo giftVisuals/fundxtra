@@ -99,7 +99,28 @@ can turn it off without a deploy.
 
 ---
 
-## 7. A domain is not required
+## 7. Switch on automatic screenshot review
+
+Screenshots are read by a model and decided in seconds; anything it is not
+sure about comes to your Telegram with an Approve and a Reject button. It
+needs one variable:
+
+**Railway → Variables → `GROQ_API_KEY`** (from console.groq.com), then
+redeploy.
+
+Without it nothing breaks — every screenshot simply waits for a person, the
+way it did before. But you will not be told, because an unconfigured reviewer
+and an unsure reviewer look identical from the outside. So check:
+**Admin → Overview → Automatic screenshot review** says ON or tells you
+exactly what is wrong, including if the model has been retired (hosted models
+get withdrawn; `GROQ_VISION_MODEL` changes which one is used, with no deploy).
+
+The reviewer never rejects without a reason the user can read, and a rejected
+task stays available for them to try again.
+
+---
+
+## 8. A domain is not required
 
 Everything — receipts, share text, canonical links, the bot's buttons — uses
 `fundxtra.vercel.app`, which resolves and is served over HTTPS. Nothing points
@@ -111,7 +132,7 @@ want one, the three settings it needs are listed under **Custom domain** in
 
 ---
 
-## 8. Check the money you are about to owe
+## 9. Check the money you are about to owe
 
 Not a settings screen — a decision.
 

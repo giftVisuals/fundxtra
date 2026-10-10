@@ -17,7 +17,7 @@ import {
   type VerificationMethod,
 } from '@fundxtra/shared';
 import { COLLECTIONS, db } from '../lib/firebase';
-import { SharedCache, Throttle } from '../lib/cache';
+import { KeyedCache, SharedCache, Throttle } from '../lib/cache';
 import { AppError, notFound } from '../lib/errors';
 import { deterministicId, newTaskId } from '../lib/ids';
 import { logger } from '../lib/logger';
@@ -148,6 +148,23 @@ export async function requireTask(taskId: string): Promise<Task> {
   const task = await findTask(taskId);
   if (!task) throw notFound('that task', `task ${taskId} not found`);
   return task;
+}
+
+/**
+ * The same task, but served from the shared campaign cache when it is there.
+ *
+ * Safe precisely where it is used — the completion path — because nothing
+ * there trusts this copy with money: the transaction re-reads the task inside
+ * itself and reserves the budget against *that* read. This copy only decides
+ * which rules to apply, so a few seconds of staleness costs nothing and saves
+ * a database read on every single completion.
+ */
+export async function requireTaskCached(taskId: string): Promise<Task> {
+  const hit = (await listLiveTaskDocs()).find((doc) => doc.id === taskId);
+  if (hit) return mapTask(hit.id, hit.data);
+  // Not live, so not in the cache: a draft, paused or deleted campaign. Read
+  // it properly so the user gets the right refusal rather than "not found".
+  return requireTask(taskId);
 }
 
 /**
@@ -504,6 +521,24 @@ export function reserveBudgetIn(
   task: Task,
   options: { pending: boolean },
 ): BudgetReservation {
+  const plan = planReservation(task);
+  applyReservationIn(tx, task, plan, options);
+  return plan;
+}
+
+/**
+ * Work out the reservation without writing anything.
+ *
+ * Split from the write because **a Firestore transaction may not read after it
+ * has written**, and the reward amount this computes is an input to the ledger
+ * entry — which reads. Reserving in one step forced the write to happen before
+ * those reads, and the real SDK rejected the whole transaction with a plain
+ * error that reached users as "Something went wrong".
+ *
+ * So callers that also post a ledger entry plan first, let the ledger do its
+ * reads, and apply the write at the end. See services/completions.ts.
+ */
+export function planReservation(task: Task): BudgetReservation {
   const availability = taskAvailability(task);
   if (!availability.available) {
     throw new AppError(
@@ -522,6 +557,16 @@ export function reserveBudgetIn(
   const autoPaused =
     remainingAfter < task.rewardKobo || claimedAfter >= task.maxCompletions;
 
+  return { rewardKobo: task.rewardKobo, remainingAfterKobo: Math.max(0, remainingAfter), autoPaused };
+}
+
+/** Write the reservation planned above. Must come after every read. */
+export function applyReservationIn(
+  tx: import('firebase-admin/firestore').Transaction,
+  task: Task,
+  plan: BudgetReservation,
+  options: { pending: boolean },
+): void {
   const update: Record<string, unknown> = {
     spentKobo: FieldValue.increment(task.rewardKobo),
     updatedAt: Timestamp.now(),
@@ -531,11 +576,9 @@ export function reserveBudgetIn(
   } else {
     update.completionCount = FieldValue.increment(1);
   }
-  if (autoPaused) update.status = 'COMPLETED' as TaskStatus;
+  if (plan.autoPaused) update.status = 'COMPLETED' as TaskStatus;
 
   tx.update(db().collection(COLLECTIONS.tasks).doc(task.id), update);
-
-  return { rewardKobo: task.rewardKobo, remainingAfterKobo: Math.max(0, remainingAfter), autoPaused };
 }
 
 /** Convert a pending reservation into a committed completion (on approval). */
@@ -636,40 +679,157 @@ export interface UserTaskState {
 }
 
 /**
- * Build the task list for a user, annotated with their own state.
+ * What one user has already done, across the live campaigns.
  *
- * Completions and submissions are fetched once for the user and joined in
- * memory rather than queried per task, so the list costs three reads regardless
- * of how many campaigns are live.
+ * Held for a minute per user, and dropped the moment that user completes or
+ * submits anything. The Mini App reloads the task list on every return to the
+ * foreground, and this answer is identical each time until they act — so
+ * without the cache, a user who completed twenty tasks paid twenty-one
+ * database reads every time they glanced at the Earn tab, and the cost of
+ * being a good user grew forever.
  */
-export async function listTasksForUser(userId: string): Promise<TaskListItem[]> {
-  const firestore = db();
+interface CachedUserTaskState {
+  completions: Map<string, number>;
+  submissions: Map<string, { status: string; reason: string | null }>;
+}
 
-  const [taskDocs, completionSnapshot, submissionSnapshot] = await Promise.all([
-    listLiveTaskDocs(),
-    firestore.collection(COLLECTIONS.taskCompletions).where('userId', '==', userId).get(),
-    firestore.collection(COLLECTIONS.taskSubmissions).where('userId', '==', userId).get(),
-  ]);
+const userTaskState = new KeyedCache<CachedUserTaskState>(60_000, 10_000, 'user-task-state');
 
-  const completionsByTask = new Map<string, number>();
-  for (const doc of completionSnapshot.docs) {
-    const taskId = doc.get('taskId') as string;
-    completionsByTask.set(taskId, (completionsByTask.get(taskId) ?? 0) + 1);
+/**
+ * How many of this user's submissions are waiting on a reviewer.
+ *
+ * Reads the same cached state the Earn tab uses, so the badge on the wallet
+ * costs nothing on its own. It used to be its own aggregation query on every
+ * dashboard open.
+ */
+export async function pendingSubmissionCount(userId: string): Promise<number> {
+  const docs = await listLiveTaskDocs();
+  const state = await loadUserTaskState(userId, docs.map((doc) => doc.id));
+  let pending = 0;
+  for (const submission of state.submissions.values()) {
+    if (submission.status === 'PENDING_REVIEW') pending += 1;
+  }
+  return pending;
+}
+
+/** Call after anything that changes what this user has done. */
+export function invalidateUserTaskState(userId: string): void {
+  userTaskState.invalidate(userId);
+}
+
+/** The one Firestore failure that means "the index is not there yet". */
+function isMissingIndexError(error: unknown): boolean {
+  const code = (error as { code?: number }).code;
+  const message = error instanceof Error ? error.message : String(error);
+  return code === 9 && /index/i.test(message);
+}
+
+/** Firestore's ceiling on the values in a single `in` clause. */
+const IN_CLAUSE_LIMIT = 30;
+
+function chunked<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function loadUserTaskState(
+  userId: string,
+  liveTaskIds: string[],
+): Promise<CachedUserTaskState> {
+  const cached = userTaskState.get(userId);
+  if (cached) return cached;
+
+  const completions = new Map<string, number>();
+  const submissions = new Map<string, { status: string; reason: string | null }>();
+
+  if (liveTaskIds.length === 0) {
+    const empty = { completions, submissions };
+    userTaskState.set(userId, empty);
+    return empty;
   }
 
-  const submissionByTask = new Map<string, { status: string; reason: string | null }>();
-  for (const doc of submissionSnapshot.docs) {
-    const taskId = doc.get('taskId') as string;
-    const status = doc.get('status') as string;
-    const existing = submissionByTask.get(taskId);
-    // A pending submission is the most relevant state; otherwise keep the last.
-    if (!existing || status === 'PENDING_REVIEW') {
-      submissionByTask.set(taskId, {
-        status,
-        reason: (doc.get('rejectionReason') as string | null) ?? null,
-      });
+  /*
+    Scoped to the campaigns that are actually live, not to everything this
+    user has ever done.
+
+    A query is billed per document it returns, so asking for a user's whole
+    history meant the Earn tab cost one read per task they had *ever*
+    completed — twenty-one reads for twenty tasks, and still growing a year
+    later. Nothing on the screen needs those rows: the list shows live
+    campaigns, so the only completions that matter are the ones against them.
+
+    The cost is now bounded by how many campaigns are running, which is a
+    number the platform chooses, rather than by how long someone has been a
+    good user.
+  */
+  const firestore = db();
+  const groups = chunked(liveTaskIds, IN_CLAUSE_LIMIT);
+
+  /*
+    `in` alongside an equality can want a composite index, and an index that
+    has not finished building must not take the Earn tab down with it. If the
+    scoped query is refused, the whole-history query runs instead: more
+    expensive, and still correct, which is the right way round.
+  */
+  const scoped = async (collection: string, ids: string[]) => {
+    try {
+      return await firestore
+        .collection(collection)
+        .where('userId', '==', userId)
+        .where('taskId', 'in', ids)
+        .get();
+    } catch (error) {
+      if (!isMissingIndexError(error)) throw error;
+      logger.warn(
+        {
+          collection,
+          hint: 'Deploy firebase/firestore.indexes.json. Until then the task list reads a user\'s whole history on every open.',
+        },
+        'Scoped task-state query refused; falling back to the full history',
+      );
+      return firestore.collection(collection).where('userId', '==', userId).get();
+    }
+  };
+
+  const results = await Promise.all(
+    groups.flatMap((ids) => [
+      scoped(COLLECTIONS.taskCompletions, ids),
+      scoped(COLLECTIONS.taskSubmissions, ids),
+    ]),
+  );
+
+  for (let index = 0; index < results.length; index += 2) {
+    for (const doc of results[index]?.docs ?? []) {
+      const taskId = doc.get('taskId') as string;
+      completions.set(taskId, (completions.get(taskId) ?? 0) + 1);
+    }
+    for (const doc of results[index + 1]?.docs ?? []) {
+      const taskId = doc.get('taskId') as string;
+      const status = doc.get('status') as string;
+      const existing = submissions.get(taskId);
+      // A pending submission is the most relevant state; otherwise keep the last.
+      if (!existing || status === 'PENDING_REVIEW') {
+        submissions.set(taskId, {
+          status,
+          reason: (doc.get('rejectionReason') as string | null) ?? null,
+        });
+      }
     }
   }
+
+  const state = { completions, submissions };
+  userTaskState.set(userId, state);
+  return state;
+}
+
+export async function listTasksForUser(userId: string): Promise<TaskListItem[]> {
+  const taskDocs = await listLiveTaskDocs();
+  const state = await loadUserTaskState(userId, taskDocs.map((doc) => doc.id));
+  const completionsByTask = state.completions;
+  const submissionByTask = state.submissions;
 
   const items: TaskListItem[] = [];
   for (const doc of taskDocs) {
@@ -787,4 +947,53 @@ export function mapTask(id: string, data: Record<string, unknown>): Task {
     createdAt: toIsoRequired(data.createdAt, nowIso()),
     updatedAt: toIsoRequired(data.updatedAt, nowIso()),
   };
+}
+
+/**
+ * Delete a campaign permanently.
+ *
+ * Pausing hides a campaign; this removes it. The difference matters for the
+ * ones that should never have existed — a test task, a typo, a sponsor that
+ * fell through — because a paused campaign still sits in the admin list
+ * forever and every list is read by somebody deciding what to do next.
+ *
+ * Two things are deliberately *not* deleted with it:
+ *
+ *  - **Completion and ledger records.** Someone was paid for this task, and
+ *    their history must keep showing why money arrived. Every transaction
+ *    carries its own description, so a user's wallet reads correctly with the
+ *    campaign gone.
+ *  - **Anything under review.** A pending submission holds reserved budget and
+ *    a user waiting on an answer. Deleting the task out from under it would
+ *    strand both, so that is refused with an explanation rather than cleaned
+ *    up silently.
+ */
+export async function deleteTask(taskId: string): Promise<Task> {
+  const task = await requireTask(taskId);
+
+  const pending = await db()
+    .collection(COLLECTIONS.taskSubmissions)
+    .where('taskId', '==', taskId)
+    .where('status', '==', 'PENDING_REVIEW')
+    .count()
+    .get();
+
+  const waiting = pending.data().count;
+  if (waiting > 0) {
+    throw new AppError(ERROR_CODES.VALIDATION_FAILED, {
+      message: `${String(waiting)} ${
+        waiting === 1 ? 'submission is' : 'submissions are'
+      } still waiting on review for this task. Decide those first, then delete it.`,
+      detail: `task ${taskId} has ${String(waiting)} pending submissions`,
+    });
+  }
+
+  await db().collection(COLLECTIONS.tasks).doc(taskId).delete();
+
+  if (task.status === 'ACTIVE') {
+    bumpStats({ activeCampaigns: -1, activeCampaignBudgetKobo: -task.budgetKobo });
+  }
+  invalidateTaskCache();
+
+  return task;
 }

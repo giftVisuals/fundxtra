@@ -70,6 +70,23 @@ export const REQUIRED_INDEXES: readonly RequiredIndex[] = [
     fields: [{ fieldPath: 'status', order: 'ASCENDING' }, { fieldPath: 'requestedAt', order: 'ASCENDING' }],
   },
   {
+    /*
+      The Earn tab: what this user has already done, among the campaigns that
+      are live right now. Scoped with `taskId in [...]` so the query costs a
+      read per live campaign they have touched rather than one per task they
+      have ever completed — which grew forever.
+    */
+    collectionGroup: 'taskCompletions',
+    queryScope: 'COLLECTION',
+    fields: [{ fieldPath: 'userId', order: 'ASCENDING' }, { fieldPath: 'taskId', order: 'ASCENDING' }],
+  },
+  {
+    // The same, for submissions still pending or rejected.
+    collectionGroup: 'taskSubmissions',
+    queryScope: 'COLLECTION',
+    fields: [{ fieldPath: 'userId', order: 'ASCENDING' }, { fieldPath: 'taskId', order: 'ASCENDING' }],
+  },
+  {
     // Duplicate-submission guard: this user's pending submission for this task.
     collectionGroup: 'taskSubmissions',
     queryScope: 'COLLECTION',

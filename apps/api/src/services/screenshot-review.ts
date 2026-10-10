@@ -60,6 +60,53 @@ export function reviewerConfigured(): boolean {
   return Boolean(env.GROQ_API_KEY);
 }
 
+/**
+ * What the reviewer did last, and whether it is even switched on.
+ *
+ * Every failure path here ends in ESCALATE, which is the right behaviour and
+ * an invisible one: a reviewer that is not configured, or whose model has
+ * been retired, looks exactly like a reviewer that is simply unsure. The
+ * owner then sees submissions piling up with no way to tell why.
+ *
+ * So the last outcome is kept — in memory, costing nothing — and shown in the
+ * admin console. "Automatic review is off because GROQ_API_KEY is not set" is
+ * a sentence somebody can act on.
+ */
+export interface ReviewerStatus {
+  configured: boolean;
+  model: string;
+  /** The last thing that went wrong, if anything has. */
+  lastProblem: { at: string; detail: string } | null;
+  /** The last decision it managed to reach. */
+  lastVerdict: { at: string; verdict: ReviewVerdict; confidence: number } | null;
+  reviewed: number;
+}
+
+let lastProblem: { at: string; detail: string } | null = null;
+let lastVerdict: { at: string; verdict: ReviewVerdict; confidence: number } | null = null;
+let reviewed = 0;
+
+export function reviewerStatus(): ReviewerStatus {
+  return {
+    configured: reviewerConfigured(),
+    model: env.GROQ_VISION_MODEL,
+    lastProblem,
+    lastVerdict,
+    reviewed,
+  };
+}
+
+/** Test seam. */
+export function resetReviewerStatus(): void {
+  lastProblem = null;
+  lastVerdict = null;
+  reviewed = 0;
+}
+
+function recordProblem(detail: string): void {
+  lastProblem = { at: new Date().toISOString(), detail };
+}
+
 const SYSTEM_PROMPT = `You verify screenshots submitted as proof that someone completed a small paid task.
 
 You will be given the task's own wording and one screenshot. Decide whether the screenshot shows the task was genuinely done.
@@ -80,11 +127,13 @@ export async function reviewScreenshot(options: {
   proofPath: string;
 }): Promise<ScreenshotReview> {
   if (!env.GROQ_API_KEY) {
+    recordProblem('GROQ_API_KEY is not set, so nothing is reviewed automatically.');
     return escalate('Automatic review is not configured');
   }
 
   const proof = await fetchProof(options.proofPath);
   if (!proof) {
+    recordProblem('The screenshot could not be fetched from the image host.');
     return escalate('The screenshot could not be fetched for review');
   }
 
@@ -122,7 +171,14 @@ export async function reviewScreenshot(options: {
     });
 
     if (!response.ok) {
-      logger.warn({ status: response.status }, 'Groq refused the review request');
+      /*
+        Read the body: a retired model answers 404 with the model name in it,
+        and a bad key answers 401. Both are one-line fixes for the owner and
+        neither is guessable from "the reviewer could not be reached".
+      */
+      const detail = (await response.text().catch(() => '')).slice(0, 300);
+      logger.warn({ status: response.status, detail }, 'Groq refused the review request');
+      recordProblem(`Groq refused the request (HTTP ${String(response.status)}): ${detail}`);
       return escalate('The reviewer could not be reached');
     }
 
@@ -130,14 +186,28 @@ export async function reviewScreenshot(options: {
       choices?: { message?: { content?: string } }[];
     };
     const content = body.choices?.[0]?.message?.content;
-    if (!content) return escalate('The reviewer returned nothing');
+    if (!content) {
+      recordProblem('Groq answered without any content.');
+      return escalate('The reviewer returned nothing');
+    }
 
-    return parseVerdict(content);
+    const review = parseVerdict(content);
+    reviewed += 1;
+    lastVerdict = {
+      at: new Date().toISOString(),
+      verdict: review.verdict,
+      confidence: review.confidence,
+    };
+    return review;
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
+      recordProblem('Groq did not answer in time.');
       return escalate('The reviewer timed out');
     }
     logger.warn({ err: error }, 'Could not reach the reviewer');
+    recordProblem(
+      `Could not reach Groq: ${error instanceof Error ? error.message : String(error)}`,
+    );
     return escalate('The reviewer could not be reached');
   } finally {
     clearTimeout(timeout);

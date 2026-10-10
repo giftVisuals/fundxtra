@@ -19,7 +19,7 @@ import { AppError, internal, notFound } from '../lib/errors';
 import { newTransactionId } from '../lib/ids';
 import { logger } from '../lib/logger';
 import { getSettings } from './settings';
-import { nowIso, startOfPlatformDay, toIso, toIsoRequired } from '../lib/time';
+import { nowIso, platformDayKey, startOfPlatformDay, toIso, toIsoRequired } from '../lib/time';
 
 /**
  * The ledger.
@@ -59,6 +59,15 @@ export interface PostEntryInput {
   allowNegativeBalance?: boolean;
   /** REVERSAL entries point back at what they undo. */
   reversalOf?: string | null;
+  /**
+   * Extra fields to fold into the same user-document update.
+   *
+   * Every credit already writes the user's balance. A caller that also wants
+   * to bump a counter on that document — a completion count, say — would
+   * otherwise issue a second write to the same document in the same
+   * transaction, and Firestore bills both. One update, two facts.
+   */
+  alsoSetOnUser?: Record<string, unknown>;
 }
 
 export interface PostEntryResult {
@@ -176,9 +185,29 @@ export async function postEntryIn(
   };
   if (direction === 'CREDIT') {
     userUpdate.lifetimeEarnedKobo = FieldValue.increment(amount);
+
+    /*
+      Today's earnings, kept on the user document as they happen.
+
+      The dashboard used to work this out by reading every credit the user had
+      received today — so the cost of opening it grew with how much they had
+      earned, and a good day for a user was an expensive one for the platform.
+      Twenty completed tasks meant twenty document reads on every single
+      refresh.
+
+      Here it is free: this update is already being written, and the user
+      document was already read a few lines above, so the day can be rolled
+      over without an extra read or an extra write.
+    */
+    const today = platformDayKey();
+    const sameDay = (userSnapshot.get('todayKey') as string | undefined) === today;
+    userUpdate.todayKey = today;
+    userUpdate.todayEarnedKobo = sameDay ? FieldValue.increment(amount) : amount;
+    userUpdate.todayCreditCount = sameDay ? FieldValue.increment(1) : 1;
   } else {
     userUpdate.lifetimePaidOutKobo = FieldValue.increment(amount);
   }
+  Object.assign(userUpdate, input.alsoSetOnUser ?? {});
   tx.update(userRef, userUpdate);
 
   return {

@@ -105,6 +105,12 @@ beforeEach(() => {
     store.commit([{ kind: 'delete', path, data: {} }]);
   }
   store.transactionAttempts = 0;
+  /*
+    Seeding writes straight into the store, which the service's shared
+    campaign cache knows nothing about. The admin API invalidates it on every
+    edit; a test that plants a task has to do the same.
+  */
+  invalidateTaskCache();
   membership.mockReset();
   membership.mockResolvedValue({ state: 'JOINED', status: 'member' });
 });
