@@ -74,7 +74,8 @@ export function reviewerConfigured(): boolean {
  */
 export interface ReviewerStatus {
   configured: boolean;
-  model: string;
+  /** Null until one has been chosen, or when none can be. */
+  model: string | null;
   /** The last thing that went wrong, if anything has. */
   lastProblem: { at: string; detail: string } | null;
   /** The last decision it managed to reach. */
@@ -89,7 +90,7 @@ let reviewed = 0;
 export function reviewerStatus(): ReviewerStatus {
   return {
     configured: reviewerConfigured(),
-    model: env.GROQ_VISION_MODEL,
+    model: env.GROQ_VISION_MODEL ?? chosen?.id ?? null,
     lastProblem,
     lastVerdict,
     reviewed,
@@ -101,6 +102,7 @@ export function resetReviewerStatus(): void {
   lastProblem = null;
   lastVerdict = null;
   reviewed = 0;
+  chosen = null;
 }
 
 function recordProblem(detail: string): void {
@@ -108,102 +110,101 @@ function recordProblem(detail: string): void {
 }
 
 /**
- * Ask Groq what it will actually accept, with this key, right now.
+ * Which model reads the screenshots — worked out, not configured.
  *
- * Hosted models get retired, and when one does every review quietly becomes
- * "send it to a person" — a correct behaviour that looks identical to the
- * reviewer simply being unsure. Guessing a replacement model id from memory
- * is how that outage gets extended by a day.
+ * This used to be a constant with a model id in it, and the id rotted: Groq
+ * retired it, every review quietly became "send it to a person", and the only
+ * way back was for somebody to find a replacement id and set an environment
+ * variable. That is a maintenance tax on the one person least able to pay it,
+ * and it will come due again every time a hosted model is withdrawn.
  *
- * So the platform asks instead. Three questions, in order, because each one
- * rules out a different cause:
+ * So the platform finds its own. It asks Groq for the models this key can
+ * reach, and then — the part that matters — it does not guess from the names.
+ * A name tells you nothing reliable about whether something accepts a
+ * picture, so each candidate is *sent* a picture and the first one that takes
+ * it is used. Correctness is decided by the API's own answer.
  *
- *  1. Does the key work at all?       — list the models
- *  2. Is the configured model there?  — compare against that list
- *  3. Does it take an image?          — send one and see
- *
- * The third matters on its own: a model id can be perfectly valid and still
- * refuse pictures, which is exactly the failure that looks like nothing
- * happening. A one-pixel PNG is enough to find out, and costs nothing.
- *
- * The key is never returned, logged, or echoed. Only what it could reach.
+ * The choice is remembered for a few hours and re-derived automatically when
+ * a review fails on it. `GROQ_VISION_MODEL` still overrides everything, for
+ * pinning one deliberately; left unset, nothing needs configuring at all.
  */
-export interface ReviewerProbe {
-  keyPresent: boolean;
-  /** Groq answered the models call. */
-  reachable: boolean;
-  configuredModel: string;
-  /** The configured model appears in this account's catalogue. */
-  configuredAvailable: boolean;
-  /** Every model id this key can use, so a working one can be chosen. */
-  models: string[];
-  /** Whether the configured model accepted an actual image. */
-  acceptsImages: boolean | null;
-  /** Groq's own words when something was refused. */
-  detail: string | null;
-}
+
+/** How long a working choice is trusted before it is re-derived. */
+const MODEL_TTL_MS = 6 * 60 * 60_000;
+
+/**
+ * Families that cannot read an image under any name.
+ *
+ * Only used to skip probing them — speech-to-text, text-to-speech and
+ * prompt-injection classifiers are not borderline cases. Nothing is *chosen*
+ * on the strength of its name.
+ */
+const NEVER_VISION = /whisper|orpheus|prompt-guard|guard-\d|tts|embed|rerank/i;
+
+/**
+ * Tried first when several models accept images.
+ *
+ * Preference only — anything matching still has to pass the image test, and
+ * anything not matching is still tried. The order exists so that when a key
+ * reaches both a small and a large multimodal model, screenshots are judged
+ * by the better one.
+ */
+const PREFERRED = [/scout|maverick/i, /vision|vl\b|llava/i, /120b|90b|70b/i, /qwen|llama|gemma/i];
+
+let chosen: { id: string; at: number } | null = null;
+let discovering: Promise<string | null> | null = null;
 
 /** A 1x1 transparent PNG. The smallest honest test of "do you take images?". */
 const ONE_PIXEL_PNG =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
-export async function probeReviewer(): Promise<ReviewerProbe> {
-  const result: ReviewerProbe = {
-    keyPresent: Boolean(env.GROQ_API_KEY),
-    reachable: false,
-    configuredModel: env.GROQ_VISION_MODEL,
-    configuredAvailable: false,
-    models: [],
-    acceptsImages: null,
-    detail: null,
-  };
+/** The model to use right now, or null when this key cannot read images at all. */
+export async function visionModel(): Promise<string | null> {
+  // An explicitly pinned model wins, and is never second-guessed.
+  if (env.GROQ_VISION_MODEL) return env.GROQ_VISION_MODEL;
 
-  if (!env.GROQ_API_KEY) {
-    result.detail = 'GROQ_API_KEY is not set on the API.';
-    return result;
+  if (chosen && Date.now() - chosen.at < MODEL_TTL_MS) return chosen.id;
+
+  // One discovery at a time, however many submissions arrive together.
+  discovering ??= discoverVisionModel().finally(() => {
+    discovering = null;
+  });
+  return discovering;
+}
+
+/** Forget the choice, so the next review works it out again. */
+export function forgetVisionModel(): void {
+  chosen = null;
+}
+
+/** Every model id this key can reach. */
+async function listModels(): Promise<string[]> {
+  const response = await fetch(`${env.GROQ_BASE_URL}/models`, {
+    headers: { authorization: `Bearer ${env.GROQ_API_KEY ?? ''}` },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => '')).slice(0, 300);
+    throw new Error(`Groq refused the key (HTTP ${String(response.status)}): ${detail}`);
   }
+  const body = (await response.json()) as { data?: { id?: unknown }[] };
+  return (body.data ?? [])
+    .map((model) => (typeof model.id === 'string' ? model.id : ''))
+    .filter(Boolean);
+}
 
-  try {
-    const response = await fetch(`${env.GROQ_BASE_URL}/models`, {
-      headers: { authorization: `Bearer ${env.GROQ_API_KEY}` },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-
-    if (!response.ok) {
-      result.detail = `Groq refused the key (HTTP ${String(response.status)}): ${(
-        await response.text().catch(() => '')
-      ).slice(0, 300)}`;
-      return result;
-    }
-
-    const body = (await response.json()) as { data?: { id?: unknown }[] };
-    result.reachable = true;
-    result.models = (body.data ?? [])
-      .map((model) => (typeof model.id === 'string' ? model.id : ''))
-      .filter(Boolean)
-      .sort();
-    result.configuredAvailable = result.models.includes(env.GROQ_VISION_MODEL);
-  } catch (error) {
-    result.detail = `Could not reach Groq: ${error instanceof Error ? error.message : String(error)}`;
-    return result;
-  }
-
-  if (!result.configuredAvailable) {
-    result.detail = `${env.GROQ_VISION_MODEL} is not in this account's model list. Set GROQ_VISION_MODEL to one of the ids below that reads images.`;
-    return result;
-  }
-
-  // The configured model exists. Does it take a picture?
+/** Does this model actually accept an image? Asked, not assumed. */
+async function acceptsImages(model: string): Promise<boolean> {
   try {
     const response = await fetch(`${env.GROQ_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${env.GROQ_API_KEY}`,
+        authorization: `Bearer ${env.GROQ_API_KEY ?? ''}`,
         'content-type': 'application/json',
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       body: JSON.stringify({
-        model: env.GROQ_VISION_MODEL,
+        model,
         max_tokens: 4,
         temperature: 0,
         messages: [
@@ -217,22 +218,122 @@ export async function probeReviewer(): Promise<ReviewerProbe> {
         ],
       }),
     });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
 
-    if (response.ok) {
-      result.acceptsImages = true;
-      result.detail = null;
-      return result;
-    }
+/** Rank by preference, so the best available reader is tried first. */
+function byPreference(models: string[]): string[] {
+  const rank = (id: string) => {
+    const index = PREFERRED.findIndex((pattern) => pattern.test(id));
+    return index === -1 ? PREFERRED.length : index;
+  };
+  return [...models].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
 
-    result.acceptsImages = false;
-    result.detail = `${env.GROQ_VISION_MODEL} exists but refused an image (HTTP ${String(
-      response.status,
-    )}): ${(await response.text().catch(() => '')).slice(0, 300)}`;
+async function discoverVisionModel(): Promise<string | null> {
+  if (!env.GROQ_API_KEY) return null;
+
+  let models: string[];
+  try {
+    models = await listModels();
   } catch (error) {
-    result.acceptsImages = false;
-    result.detail = `The image test failed: ${error instanceof Error ? error.message : String(error)}`;
+    recordProblem(error instanceof Error ? error.message : String(error));
+    return null;
   }
 
+  const candidates = byPreference(models.filter((id) => !NEVER_VISION.test(id)));
+
+  /*
+    Probed together rather than one after another. There are only a handful,
+    it happens a few times a day at most, and a user waiting on a screenshot
+    should not pay for a serial walk through a model catalogue.
+  */
+  const outcomes = await Promise.all(
+    candidates.map(async (id) => ({ id, ok: await acceptsImages(id) })),
+  );
+  const winner = outcomes.find((outcome) => outcome.ok);
+
+  if (!winner) {
+    recordProblem(
+      `None of the ${String(models.length)} models this key can reach accept images, so every screenshot goes to a person. The key works; it just has no vision model on it.`,
+    );
+    return null;
+  }
+
+  chosen = { id: winner.id, at: Date.now() };
+  logger.info({ model: winner.id, candidates: candidates.length }, 'Chose a vision model');
+  lastProblem = null;
+  return winner.id;
+}
+
+/**
+ * What the reviewer can do with this key, reported for the admin console.
+ *
+ * Runs the same discovery the reviewer runs, so what it reports is what will
+ * actually happen — not a parallel code path that can disagree with it.
+ */
+export interface ReviewerProbe {
+  keyPresent: boolean;
+  /** Groq answered the models call. */
+  reachable: boolean;
+  /** The model that will be used, or null when none reads images. */
+  model: string | null;
+  /** True when a human pinned it with GROQ_VISION_MODEL. */
+  pinned: boolean;
+  /** Every model id this key can use. */
+  models: string[];
+  /** Whether `model` accepted an actual image. */
+  acceptsImages: boolean | null;
+  /** Groq's own words when something was refused. */
+  detail: string | null;
+}
+
+export async function probeReviewer(): Promise<ReviewerProbe> {
+  const result: ReviewerProbe = {
+    keyPresent: Boolean(env.GROQ_API_KEY),
+    reachable: false,
+    model: null,
+    pinned: Boolean(env.GROQ_VISION_MODEL),
+    models: [],
+    acceptsImages: null,
+    detail: null,
+  };
+
+  if (!env.GROQ_API_KEY) {
+    result.detail = 'GROQ_API_KEY is not set on the API.';
+    return result;
+  }
+
+  try {
+    result.models = (await listModels()).sort();
+    result.reachable = true;
+  } catch (error) {
+    result.detail = error instanceof Error ? error.message : String(error);
+    return result;
+  }
+
+  // Always re-derive on an explicit check: the point of pressing it is to
+  // find out what is true now, not what was true six hours ago.
+  forgetVisionModel();
+  result.model = await visionModel();
+
+  if (!result.model) {
+    result.acceptsImages = false;
+    result.detail =
+      lastProblem?.detail ??
+      'No model on this key accepts images, so every screenshot goes to a person.';
+    return result;
+  }
+
+  result.acceptsImages = await acceptsImages(result.model);
+  if (!result.acceptsImages) {
+    result.detail = result.pinned
+      ? `${result.model} is pinned with GROQ_VISION_MODEL but refuses images. Unset that variable and the platform will choose one that works.`
+      : `${result.model} stopped accepting images between being chosen and being tested.`;
+  }
   return result;
 }
 
@@ -260,6 +361,13 @@ export async function reviewScreenshot(options: {
     return escalate('Automatic review is not configured');
   }
 
+  const model = await visionModel();
+  if (!model) {
+    // Already recorded by the discovery, with the reason. Every screenshot
+    // goes to a person, which is what happened before any of this existed.
+    return escalate('No model on this key can read images');
+  }
+
   const proof = await fetchProof(options.proofPath);
   if (!proof) {
     recordProblem('The screenshot could not be fetched from the image host.');
@@ -280,7 +388,7 @@ export async function reviewScreenshot(options: {
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: env.GROQ_VISION_MODEL,
+        model,
         // Deterministic: the same screenshot should not be approved on Monday
         // and rejected on Tuesday.
         temperature: 0,
@@ -306,8 +414,15 @@ export async function reviewScreenshot(options: {
         neither is guessable from "the reviewer could not be reached".
       */
       const detail = (await response.text().catch(() => '')).slice(0, 300);
-      logger.warn({ status: response.status, detail }, 'Groq refused the review request');
+      logger.warn({ status: response.status, model, detail }, 'Groq refused the review request');
       recordProblem(`Groq refused the request (HTTP ${String(response.status)}): ${detail}`);
+
+      /*
+        A refusal about the model itself — retired, renamed, no longer
+        multimodal — invalidates the choice. The next submission picks again
+        rather than every one of them failing the same way until a restart.
+      */
+      if (response.status === 404 || response.status === 400) forgetVisionModel();
       return escalate('The reviewer could not be reached');
     }
 

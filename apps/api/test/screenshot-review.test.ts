@@ -24,7 +24,8 @@ vi.mock('../src/services/uploads', () => ({
   fetchProof: async () => ({ bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]), contentType: 'image/png' }),
 }));
 
-const { reviewScreenshot, reviewerConfigured } = await import('../src/services/screenshot-review');
+const { reviewScreenshot, reviewerConfigured, resetReviewerStatus, visionModel, probeReviewer } =
+  await import('../src/services/screenshot-review');
 
 const task = {
   id: 'crediplex',
@@ -37,15 +38,47 @@ const task = {
 
 let lastBody: Record<string, unknown> | null = null;
 
-function mockGroq(content: unknown, ok = true) {
+/**
+ * Stand in for Groq.
+ *
+ * Three endpoints matter now, not one: the model list, the one-pixel image
+ * test the platform uses to find a model that reads pictures, and the review
+ * itself. `vision` names the models that accept an image; everything else
+ * refuses one, exactly as a speech or text-only model does.
+ */
+function mockGroq(
+  content: unknown,
+  options: { ok?: boolean; models?: string[]; vision?: string[] } = {},
+) {
+  const {
+    ok = true,
+    models = ['whisper-large-v3', 'text-only-9b', 'qwen/qwen9-vision'],
+    vision = ['qwen/qwen9-vision'],
+  } = options;
+
   lastBody = null;
+  resetReviewerStatus();
+
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (_url: string, init: { body: string }) => {
-      lastBody = JSON.parse(init.body) as Record<string, unknown>;
+    vi.fn(async (url: string, init?: { body?: string }) => {
+      if (String(url).endsWith('/models')) {
+        return { ok: true, status: 200, json: async () => ({ data: models.map((id) => ({ id })) }) };
+      }
+
+      const body = JSON.parse(init?.body ?? '{}') as Record<string, unknown>;
+      const model = String(body.model ?? '');
+      const isProbe = JSON.stringify(body).includes('Reply with the single word: ok');
+
+      if (isProbe) {
+        return { ok: vision.includes(model), status: vision.includes(model) ? 200 : 400, text: async () => 'no image support', json: async () => ({}) };
+      }
+
+      lastBody = body;
       return {
         ok,
         status: ok ? 200 : 500,
+        text: async () => 'failed',
         json: async () => ({
           choices: [{ message: { content: typeof content === 'string' ? content : JSON.stringify(content) } }],
         }),
@@ -56,6 +89,7 @@ function mockGroq(content: unknown, ok = true) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetReviewerStatus();
 });
 
 describe('deciding', () => {
@@ -155,5 +189,85 @@ describe('the prompt', () => {
     // Configuration is read at import time, so this asserts the guard exists
     // rather than re-importing the module.
     vi.unstubAllEnvs();
+  });
+});
+
+/**
+ * Choosing the model.
+ *
+ * A hardcoded model id was shipped and was dead within months, which stopped
+ * every automatic review with no visible symptom. The fix is that the
+ * platform works it out — and the part worth protecting is that it decides by
+ * *sending an image*, not by reading names. A name tells you nothing
+ * reliable; several models here are plausible-sounding and refuse pictures.
+ */
+describe('choosing a model', () => {
+  it('picks one that actually accepts an image', async () => {
+    mockGroq({ observed: 'x', verdict: 'ESCALATE', confidence: 0.2, reason: '' }, {
+      models: ['whisper-large-v3', 'text-only-9b', 'qwen/qwen9-vision'],
+      vision: ['qwen/qwen9-vision'],
+    });
+
+    expect(await visionModel()).toBe('qwen/qwen9-vision');
+  });
+
+  it('prefers the more capable reader when several accept images', async () => {
+    mockGroq({ observed: 'x', verdict: 'ESCALATE', confidence: 0.2, reason: '' }, {
+      models: ['tiny-vl-2b', 'meta-llama/llama-4-scout-17b'],
+      vision: ['tiny-vl-2b', 'meta-llama/llama-4-scout-17b'],
+    });
+
+    expect(await visionModel()).toBe('meta-llama/llama-4-scout-17b');
+  });
+
+  it('reviews with the model it chose', async () => {
+    mockGroq({ observed: 'seen', verdict: 'APPROVE', confidence: 0.97, reason: '' }, {
+      models: ['whisper-large-v3', 'qwen/qwen9-vision'],
+      vision: ['qwen/qwen9-vision'],
+    });
+
+    const review = await reviewScreenshot({ task, proofPath: 'https://i.ibb.co/a/b.png' });
+    expect(review.verdict).toBe('APPROVE');
+    expect(lastBody?.model).toBe('qwen/qwen9-vision');
+  });
+
+  it('escalates, rather than guessing, when no model reads images', async () => {
+    mockGroq({ observed: 'x', verdict: 'APPROVE', confidence: 0.99, reason: '' }, {
+      models: ['whisper-large-v3', 'text-only-9b'],
+      vision: [],
+    });
+
+    const review = await reviewScreenshot({ task, proofPath: 'https://i.ibb.co/a/b.png' });
+    expect(review.verdict).toBe('ESCALATE');
+    // Nothing was approved on a key that cannot see.
+    expect(lastBody).toBeNull();
+  });
+
+  it('reports the honest answer to the admin console', async () => {
+    mockGroq({ observed: 'x', verdict: 'ESCALATE', confidence: 0.1, reason: '' }, {
+      models: ['whisper-large-v3', 'text-only-9b'],
+      vision: [],
+    });
+
+    const probe = await probeReviewer();
+    expect(probe.keyPresent).toBe(true);
+    expect(probe.reachable).toBe(true);
+    expect(probe.model).toBeNull();
+    expect(probe.acceptsImages).toBe(false);
+    expect(probe.detail).toContain('accept images');
+    expect(probe.models).toHaveLength(2);
+  });
+
+  it('names the chosen model to the admin console when there is one', async () => {
+    mockGroq({ observed: 'x', verdict: 'ESCALATE', confidence: 0.1, reason: '' }, {
+      models: ['whisper-large-v3', 'qwen/qwen9-vision'],
+      vision: ['qwen/qwen9-vision'],
+    });
+
+    const probe = await probeReviewer();
+    expect(probe.model).toBe('qwen/qwen9-vision');
+    expect(probe.acceptsImages).toBe(true);
+    expect(probe.pinned).toBe(false);
+    expect(probe.detail).toBeNull();
   });
 });

@@ -85,13 +85,18 @@ const envSchema = z.object({
    */
   GROQ_API_KEY: z.string().min(8).optional(),
   /**
-   * Which vision model to use.
+   * Pin one vision model, overriding the platform's own choice.
    *
-   * A variable rather than a constant because hosted models get retired —
-   * Groq deprecated two of its vision models during 2026 alone. Switching one
-   * should be a dashboard edit, not a deploy.
+   * Normally left unset. A hardcoded model id rots — Groq retires them, and
+   * the id that shipped was dead within months, which silently stopped every
+   * automatic review. So the API now asks Groq which models the key can
+   * reach and tests them with a real image, rather than trusting a name. See
+   * services/screenshot-review.ts.
+   *
+   * Set this only to force a specific model; a pinned one is never
+   * second-guessed, including when it stops working.
    */
-  GROQ_VISION_MODEL: z.string().min(3).default('qwen/qwen3.6-27b'),
+  GROQ_VISION_MODEL: z.string().min(3).optional(),
   /** Where the API lives. Overridable so a proxy or a mock can stand in. */
   GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),
 

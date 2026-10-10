@@ -108,12 +108,19 @@ needs one variable:
 **Railway → Variables → `GROQ_API_KEY`** (from console.groq.com), then
 redeploy.
 
-Without it nothing breaks — every screenshot simply waits for a person, the
-way it did before. But you will not be told, because an unconfigured reviewer
-and an unsure reviewer look identical from the outside. So check:
-**Admin → Overview → Automatic screenshot review** says ON or tells you
-exactly what is wrong, including if the model has been retired (hosted models
-get withdrawn; `GROQ_VISION_MODEL` changes which one is used, with no deploy).
+That is the only variable. **Which model reads the screenshots is not your
+problem** — the API asks Groq what the key can reach, sends each candidate a
+real image, and uses the first that accepts one. Hosted models get retired;
+this re-chooses by itself, with no deploy and nothing to set.
+
+Without the key nothing breaks — every screenshot simply waits for a person,
+the way it did before. But you will not be told, because an unconfigured
+reviewer and an unsure reviewer look identical from the outside. So check:
+**Admin → Overview → Automatic screenshot review**, and press
+**Check the reviewer**. It says which model it picked, or exactly why it
+could not — including the honest case where no model on your key reads
+images at all, which means a different Groq account or provider, not a
+different setting.
 
 The reviewer never rejects without a reason the user can read, and a rejected
 task stays available for them to try again.

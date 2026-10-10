@@ -713,8 +713,8 @@ function OverviewView() {
 interface ReviewerProbe {
   keyPresent: boolean;
   reachable: boolean;
-  configuredModel: string;
-  configuredAvailable: boolean;
+  model: string | null;
+  pinned: boolean;
   models: string[];
   acceptsImages: boolean | null;
   detail: string | null;
@@ -800,9 +800,16 @@ function AutoReviewCard() {
         )}
 
         <p style={{ fontSize: tokens.typography.size['2xs'], color: tokens.semantic.inkSubtle }}>
-          Model: <code>{review.model}</code>. Anything the reviewer is unsure about is sent to your
-          Telegram with two buttons, and nothing is ever rejected by it without a reason the user
-          can read.
+          {review.model ? (
+            <>
+              Reading screenshots with <code>{review.model}</code>, chosen by the API itself.{' '}
+            </>
+          ) : (
+            <>No model chosen yet — one is picked the first time a screenshot arrives. </>
+          )}
+          Hosted models get retired; when one does, the next screenshot picks another. Nothing to
+          set. Anything the reviewer is unsure about goes to your Telegram with two buttons, and
+          nothing is ever rejected without a reason the user can read.
         </p>
 
         {/*
@@ -833,8 +840,12 @@ function AutoReviewCard() {
           >
             <ProbeLine label="API key" ok={probe.keyPresent && probe.reachable} />
             <ProbeLine
-              label={`Model "${probe.configuredModel}" exists`}
-              ok={probe.configuredAvailable}
+              label={
+                probe.model
+                  ? `Using ${probe.model}${probe.pinned ? ' (pinned)' : ''}`
+                  : 'Found a model that reads images'
+              }
+              ok={Boolean(probe.model)}
             />
             <ProbeLine label="It reads images" ok={probe.acceptsImages === true} />
 
@@ -851,7 +862,7 @@ function AutoReviewCard() {
               </p>
             )}
 
-            {probe.models.length > 0 && !(probe.configuredAvailable && probe.acceptsImages) && (
+            {probe.models.length > 0 && probe.acceptsImages !== true && (
               <details>
                 <summary
                   style={{
@@ -860,8 +871,8 @@ function AutoReviewCard() {
                     cursor: 'pointer',
                   }}
                 >
-                  {probe.models.length} models this key can use — pick one and set{' '}
-                  <code>GROQ_VISION_MODEL</code> on Railway
+                  {probe.models.length} models this key can reach — every one was sent a test
+                  image
                 </summary>
                 <ul
                   style={{
@@ -882,12 +893,15 @@ function AutoReviewCard() {
                   style={{
                     marginTop: 8,
                     fontSize: tokens.typography.size['2xs'],
+                    lineHeight: tokens.typography.leading.relaxed,
                     color: tokens.semantic.inkSubtle,
                   }}
                 >
-                  Set one, redeploy, then press <strong>Check the reviewer</strong> again. The
-                  third line has to say yes — a model can be perfectly valid and still refuse
-                  pictures, which is the failure that looks like nothing happening.
+                  None of them accepted one, so this key has no vision model on it and every
+                  screenshot will keep going to a person. That is an account question, not a
+                  setting: a Groq account with a multimodal model, or another provider. Press{' '}
+                  <strong>Check the reviewer</strong> again after changing the key — if Groq adds
+                  one to your plan, it is picked up with no deploy.
                 </p>
               </details>
             )}
