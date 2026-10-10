@@ -85,34 +85,62 @@ function drawMark(
  * 1×1 canvas costs nothing and it cannot disagree with itself, which an
  * estimate always eventually does.
  */
+/**
+ * Wraps a value to the available width, returning the lines.
+ *
+ * A bank account name or a rejection reason is as long as it happens to be,
+ * and at this type size two of them run off the edge.
+ */
+function wrap(context: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = '';
+
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (context.measureText(next).width <= maxWidth || !line) {
+      line = next;
+    } else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length > 0 ? lines : [text];
+}
+
 function paintReceipt(context: CanvasRenderingContext2D, input: ReceiptImageInput): number {
   const sans = tokens.typography.fontSans.replace('var(--font-sans), ', '');
   const mono = tokens.typography.fontMono;
+  const inner = WIDTH - PAD * 2;
 
-  context.fillStyle = tokens.colors.cocoa[50];
-  context.fillRect(0, 0, WIDTH, 6);
+  context.fillStyle = tokens.semantic.brand;
+  context.fillRect(0, 0, WIDTH, 10);
 
-  let y = 54;
+  let y = 84;
 
   /*
-    Brand on the left, status on the right, one line.
-
-    This used to be three stacked centred blocks — badge, then the kind of
-    receipt, then the status pill — about 130px before the amount had even
-    started. A receipt is read on a phone, in one glance, and every row above
-    the number pushes the number further out of sight.
+    Type size is the whole design here.
+    
+    This document is read as an image on a phone, where it is scaled to the
+    screen width — so what decides whether it can be read is not how tall it
+    is, it is how big the text is *relative to the canvas*. At 14px on a
+    720px canvas, a label renders at about 8px on a 400px phone, which is
+    why the first version was unreadable and why making it shorter did not
+    help. Everything below is roughly double that, and the label sits above
+    its value rather than beside it, so neither has to be squeezed.
   */
-  const badge = 28;
+  const badge = 40;
   context.fillStyle = tokens.semantic.brand;
   context.beginPath();
-  context.roundRect(PAD, y - 21, badge, badge, 8);
+  context.roundRect(PAD, y - 30, badge, badge, 11);
   context.fill();
-  drawMark(context, PAD + 6, y - 15, badge - 12, '#ffffff');
+  drawMark(context, PAD + 8, y - 22, badge - 16, '#ffffff');
 
   context.fillStyle = tokens.semantic.brandInk;
-  context.font = `700 19px ${sans}`;
+  context.font = `700 28px ${sans}`;
   context.textAlign = 'left';
-  context.fillText('Fundxtra', PAD + badge + 10, y);
+  context.fillText('Fundxtra', PAD + badge + 14, y);
 
   const tone =
     input.statusTone === 'good'
@@ -121,67 +149,70 @@ function paintReceipt(context: CanvasRenderingContext2D, input: ReceiptImageInpu
         ? { fill: tokens.colors.danger.soft, text: tokens.colors.danger.strong }
         : { fill: tokens.colors.warning.soft, text: tokens.colors.warning.strong };
 
-  context.font = `700 11px ${sans}`;
+  context.font = `700 16px ${sans}`;
   const pillText = input.statusLabel.toUpperCase();
-  const pillWidth = context.measureText(pillText).width + 26;
+  const pillWidth = context.measureText(pillText).width + 34;
   context.fillStyle = tone.fill;
   context.beginPath();
-  context.roundRect(WIDTH - PAD - pillWidth, y - 18, pillWidth, 24, 12);
+  context.roundRect(WIDTH - PAD - pillWidth, y - 26, pillWidth, 34, 17);
   context.fill();
   context.fillStyle = tone.text;
   context.textAlign = 'center';
-  context.fillText(pillText, WIDTH - PAD - pillWidth / 2, y - 2);
+  context.fillText(pillText, WIDTH - PAD - pillWidth / 2, y - 3);
 
-  // The amount, as big as it can be: it is the whole point of the document.
-  y += 66;
+  // The amount, as big as the document can carry.
+  y += 110;
   context.textAlign = 'center';
   context.fillStyle = tokens.semantic.ink;
-  context.font = `700 52px ${sans}`;
+  context.font = `700 76px ${sans}`;
   context.fillText(
     `${input.amountPrefix ?? ''}${formatNaira(Math.abs(input.amountKobo))}`,
     WIDTH / 2,
     y,
   );
 
-  y += 26;
+  y += 44;
   context.fillStyle = tokens.semantic.inkSubtle;
-  context.font = `400 14px ${sans}`;
+  context.font = `400 22px ${sans}`;
   context.fillText(input.when, WIDTH / 2, y);
 
-  // The rows: label left, value right, a dashed rule under each.
-  y += 44;
+  // The rows: label above value, a dashed rule between.
+  y += 76;
+  context.textAlign = 'left';
   for (const line of input.lines) {
-    context.textAlign = 'left';
     context.fillStyle = tokens.semantic.inkSubtle;
-    context.font = `400 14px ${sans}`;
+    context.font = `400 20px ${sans}`;
     context.fillText(line.label, PAD, y);
 
-    context.textAlign = 'right';
+    y += 38;
     context.fillStyle = tokens.semantic.ink;
-    context.font = line.mono ? `600 13px ${mono}` : `600 14px ${sans}`;
-    context.fillText(line.value, WIDTH - PAD, y);
+    context.font = line.mono ? `600 24px ${mono}` : `600 27px ${sans}`;
+    for (const part of wrap(context, line.value, inner)) {
+      context.fillText(part, PAD, y);
+      y += 36;
+    }
 
-    y += 14;
+    y += 6;
     context.strokeStyle = tokens.semantic.border;
-    context.setLineDash([4, 5]);
-    context.lineWidth = 1;
+    context.setLineDash([5, 7]);
+    context.lineWidth = 1.5;
     context.beginPath();
     context.moveTo(PAD, y);
     context.lineTo(WIDTH - PAD, y);
     context.stroke();
     context.setLineDash([]);
-    y += 24;
+    y += 48;
   }
 
   /*
-    One line, not a paragraph. A shared receipt outlives the app it was made
-    in, so it has to say where it came from — but the disclaimer that used to
-    wrap to three lines said nothing the reference and the brand do not.
+    Where it came from. A receipt gets forwarded, and on its own it is an
+    image of some numbers — the bot handle is the one thing that lets whoever
+    received it find out what Fundxtra is.
   */
-  y += 8;
+  y += 4;
   context.textAlign = 'center';
   context.fillStyle = tokens.semantic.brandInk;
-  context.font = `600 12px ${sans}`;
+  context.font = `600 20px ${sans}`;
   context.fillText(input.source, WIDTH / 2, y);
 
   return y;

@@ -450,7 +450,12 @@ export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
  * it is an image of some numbers. With it, whoever is holding it can get to the
  * bot and check.
  */
-const RECEIPT_SOURCE = `${config.siteUrl.replace(/^https?:\/\//, '')} · @${config.botUsername}`;
+/*
+  The bot handle alone. The site address used to be printed beside it, which
+  put a deployment URL on every receipt a user forwards — and the thing
+  somebody who receives one needs is the way in, which is the bot.
+*/
+const RECEIPT_SOURCE = `@${config.botUsername}`;
 
 const sourceStyle: React.CSSProperties = {
   marginTop: 8,
