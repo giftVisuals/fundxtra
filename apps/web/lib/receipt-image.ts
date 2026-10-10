@@ -44,7 +44,12 @@ export interface ReceiptImageInput {
 }
 
 const WIDTH = 720;
-const PAD = 44;
+/** Space around the card, so it reads as a card rather than a screenshot. */
+const MARGIN = 26;
+const PAD = 40;
+const RADIUS = 28;
+/** The brand-coloured band that carries the amount. */
+const BAND_HEIGHT = 256;
 const SCALE = 2;
 
 /**
@@ -109,122 +114,173 @@ function wrap(context: CanvasRenderingContext2D, text: string, maxWidth: number)
   return lines.length > 0 ? lines : [text];
 }
 
+/**
+ * Paints the receipt, and reports how tall it turned out.
+ *
+ * The design, and why:
+ *
+ * A receipt is the one thing a user voluntarily shows other people. Somebody
+ * who has just been paid screenshots it into a WhatsApp group, and that image
+ * is the most persuasive advertising the platform will ever have — so it is
+ * worth making it look like something, not like a text file.
+ *
+ * It is built as a white card on a warm ground, with the amount carried in a
+ * brand-coloured header band. White on cocoa gives the number somewhere to
+ * live that is unmistakably Fundxtra, and it means the first thing anybody
+ * sees in a chat thumbnail is the brand and the figure together.
+ *
+ * Type size is still the hard constraint: this is scaled down to a phone's
+ * width, so a 14px label would land at about 8px. Everything here is sized
+ * for that, and each label sits above its value so neither is squeezed.
+ */
 function paintReceipt(context: CanvasRenderingContext2D, input: ReceiptImageInput): number {
   const sans = tokens.typography.fontSans.replace('var(--font-sans), ', '');
   const mono = tokens.typography.fontMono;
-  const inner = WIDTH - PAD * 2;
+  const cardX = MARGIN;
+  const cardW = WIDTH - MARGIN * 2;
+  const inner = cardW - PAD * 2;
+  const left = cardX + PAD;
+  const right = cardX + cardW - PAD;
 
-  context.fillStyle = tokens.semantic.brand;
-  context.fillRect(0, 0, WIDTH, 10);
+  // --- the header band -----------------------------------------------------
 
-  let y = 84;
+  const band = context.createLinearGradient(0, 0, WIDTH, BAND_HEIGHT);
+  band.addColorStop(0, tokens.colors.cocoa[600]);
+  band.addColorStop(1, tokens.colors.cocoa[700]);
+  context.fillStyle = band;
+  context.beginPath();
+  context.roundRect(cardX, MARGIN, cardW, BAND_HEIGHT, [RADIUS, RADIUS, 0, 0]);
+  context.fill();
 
   /*
-    Type size is the whole design here.
+    A soft highlight across the top of the band.
     
-    This document is read as an image on a phone, where it is scaled to the
-    screen width — so what decides whether it can be read is not how tall it
-    is, it is how big the text is *relative to the canvas*. At 14px on a
-    720px canvas, a label renders at about 8px on a 400px phone, which is
-    why the first version was unreadable and why making it shorter did not
-    help. Everything below is roughly double that, and the label sits above
-    its value rather than beside it, so neither has to be squeezed.
+    Flat colour on a large area reads as a placeholder; one light pass makes
+    it read as a surface. Clipped to the band so the rounded corners hold.
   */
-  const badge = 40;
-  context.fillStyle = tokens.semantic.brand;
+  context.save();
   context.beginPath();
-  context.roundRect(PAD, y - 30, badge, badge, 11);
+  context.roundRect(cardX, MARGIN, cardW, BAND_HEIGHT, [RADIUS, RADIUS, 0, 0]);
+  context.clip();
+  const sheen = context.createRadialGradient(
+    cardX + cardW * 0.78, MARGIN - 40, 20,
+    cardX + cardW * 0.78, MARGIN - 40, cardW * 0.9,
+  );
+  sheen.addColorStop(0, 'rgba(255,255,255,0.16)');
+  sheen.addColorStop(1, 'rgba(255,255,255,0)');
+  context.fillStyle = sheen;
+  context.fillRect(cardX, MARGIN, cardW, BAND_HEIGHT);
+  context.restore();
+
+  let y = MARGIN + 66;
+
+  // Mark and wordmark, in white on the band.
+  const badge = 42;
+  context.save();
+  context.globalAlpha = 0.18;
+  context.fillStyle = '#ffffff';
+  context.beginPath();
+  context.roundRect(left, y - 31, badge, badge, 12);
   context.fill();
-  drawMark(context, PAD + 8, y - 22, badge - 16, '#ffffff');
+  context.restore();
+  drawMark(context, left + 9, y - 22, badge - 18, '#ffffff');
 
-  context.fillStyle = tokens.semantic.brandInk;
-  context.font = `700 28px ${sans}`;
+  context.fillStyle = '#ffffff';
+  context.font = `700 29px ${sans}`;
   context.textAlign = 'left';
-  context.fillText('Fundxtra', PAD + badge + 14, y);
+  context.fillText('Fundxtra', left + badge + 14, y);
 
-  const tone =
-    input.statusTone === 'good'
-      ? { fill: tokens.colors.success.soft, text: tokens.colors.success.strong }
-      : input.statusTone === 'bad'
-        ? { fill: tokens.colors.danger.soft, text: tokens.colors.danger.strong }
-        : { fill: tokens.colors.warning.soft, text: tokens.colors.warning.strong };
-
+  // Status, as a translucent pill so it belongs to the band.
   context.font = `700 16px ${sans}`;
   const pillText = input.statusLabel.toUpperCase();
-  const pillWidth = context.measureText(pillText).width + 34;
-  context.fillStyle = tone.fill;
+  const pillW = context.measureText(pillText).width + 36;
+  context.save();
+  context.globalAlpha = 0.22;
+  context.fillStyle = '#ffffff';
   context.beginPath();
-  context.roundRect(WIDTH - PAD - pillWidth, y - 26, pillWidth, 34, 17);
+  context.roundRect(right - pillW, y - 27, pillW, 36, 18);
   context.fill();
-  context.fillStyle = tone.text;
+  context.restore();
+  context.fillStyle = '#ffffff';
   context.textAlign = 'center';
-  context.fillText(pillText, WIDTH - PAD - pillWidth / 2, y - 3);
+  context.fillText(pillText, right - pillW / 2, y - 3);
 
-  // The amount, as big as the document can carry.
-  y += 110;
+  // The amount. The reason the document exists.
+  y += 104;
   context.textAlign = 'center';
-  context.fillStyle = tokens.semantic.ink;
-  context.font = `700 76px ${sans}`;
+  context.fillStyle = '#ffffff';
+  context.font = `700 80px ${sans}`;
   context.fillText(
     `${input.amountPrefix ?? ''}${formatNaira(Math.abs(input.amountKobo))}`,
     WIDTH / 2,
     y,
   );
 
-  y += 44;
-  context.fillStyle = tokens.semantic.inkSubtle;
-  context.font = `400 22px ${sans}`;
+  y += 42;
+  context.save();
+  context.globalAlpha = 0.78;
+  context.fillStyle = '#ffffff';
+  context.font = `400 21px ${sans}`;
   context.fillText(input.when, WIDTH / 2, y);
+  context.restore();
 
-  // The rows: label above value, a dashed rule between.
-  y += 76;
+  // --- the rows ------------------------------------------------------------
+
+  y = MARGIN + BAND_HEIGHT + 62;
   context.textAlign = 'left';
-  for (const line of input.lines) {
+
+  for (const [index, line] of input.lines.entries()) {
     context.fillStyle = tokens.semantic.inkSubtle;
     context.font = `400 20px ${sans}`;
-    context.fillText(line.label, PAD, y);
+    context.fillText(line.label, left, y);
 
     y += 38;
     context.fillStyle = tokens.semantic.ink;
     context.font = line.mono ? `600 24px ${mono}` : `600 27px ${sans}`;
     for (const part of wrap(context, line.value, inner)) {
-      context.fillText(part, PAD, y);
+      context.fillText(part, left, y);
       y += 36;
     }
 
-    y += 6;
-    context.strokeStyle = tokens.semantic.border;
-    context.setLineDash([5, 7]);
-    context.lineWidth = 1.5;
-    context.beginPath();
-    context.moveTo(PAD, y);
-    context.lineTo(WIDTH - PAD, y);
-    context.stroke();
-    context.setLineDash([]);
-    y += 48;
+    // No rule under the last row: the footer divides it already.
+    if (index < input.lines.length - 1) {
+      y += 8;
+      context.strokeStyle = tokens.semantic.border;
+      context.setLineDash([5, 8]);
+      context.lineWidth = 1.5;
+      context.beginPath();
+      context.moveTo(left, y);
+      context.lineTo(right, y);
+      context.stroke();
+      context.setLineDash([]);
+      y += 46;
+    }
   }
 
   /*
-    Where it came from. A receipt gets forwarded, and on its own it is an
-    image of some numbers — the bot handle is the one thing that lets whoever
-    received it find out what Fundxtra is.
+    Where it came from, on a tinted strip.
+    
+    A receipt gets forwarded, and on its own it is an image of some numbers —
+    the handle is the one thing that lets whoever received it find the way in.
   */
-  y += 4;
+  y += 22;
+  const footerTop = y - 34;
+  context.fillStyle = tokens.colors.cocoa[50];
+  context.fillRect(cardX, footerTop, cardW, 76);
+
   context.textAlign = 'center';
   context.fillStyle = tokens.semantic.brandInk;
-  context.font = `600 20px ${sans}`;
-  context.fillText(input.source, WIDTH / 2, y);
+  context.font = `700 21px ${sans}`;
+  context.fillText(input.source, WIDTH / 2, y + 8);
 
-  return y;
+  return footerTop + 76;
 }
-
-/** Clear white under the last line, for the torn edge to bite into. */
-const BOTTOM_MARGIN = 26;
 
 export async function renderReceiptPng(input: ReceiptImageInput): Promise<Blob> {
   const measure = document.createElement('canvas').getContext('2d');
   if (!measure) throw new Error('Canvas is unavailable on this device');
-  const height = Math.ceil(paintReceipt(measure, input)) + BOTTOM_MARGIN;
+  const cardBottom = Math.ceil(paintReceipt(measure, input));
+  const height = cardBottom + MARGIN;
 
   const canvas = document.createElement('canvas');
   canvas.width = WIDTH * SCALE;
@@ -233,28 +289,52 @@ export async function renderReceiptPng(input: ReceiptImageInput): Promise<Blob> 
   if (!context) throw new Error('Canvas is unavailable on this device');
   context.scale(SCALE, SCALE);
 
-  // Ground.
-  context.fillStyle = '#ffffff';
+  // The warm ground the card sits on.
+  context.fillStyle = tokens.colors.sand[50];
   context.fillRect(0, 0, WIDTH, height);
 
+  /*
+    The card, with a soft shadow.
+
+    Painted before the content and then used as a clip, so the header band's
+    square bottom corners and the footer strip both stop at the card's
+    rounded edge instead of running past it.
+  */
+  const cardTop = MARGIN;
+  const cardHeight = cardBottom - MARGIN;
+
+  context.save();
+  context.shadowColor = 'rgba(80, 52, 32, 0.13)';
+  context.shadowBlur = 26;
+  context.shadowOffsetY = 10;
+  context.fillStyle = '#ffffff';
+  context.beginPath();
+  context.roundRect(MARGIN, cardTop, WIDTH - MARGIN * 2, cardHeight, RADIUS);
+  context.fill();
+  context.restore();
+
+  context.save();
+  context.beginPath();
+  context.roundRect(MARGIN, cardTop, WIDTH - MARGIN * 2, cardHeight, RADIUS);
+  context.clip();
   paintReceipt(context, input);
+  context.restore();
 
   /*
-    The torn lower edge, so the image reads as a slip rather than a card.
+    A notched lower edge, so the card reads as a slip torn from a roll.
 
-    Punched out rather than painted white: the receipt is white, so white
-    circles on it were invisible and the edge did nothing at all. Erasing
-    leaves the notches transparent, which is what makes them read as notches
-    against whatever the image is shared onto.
+    Painted in the ground colour rather than punched out. Erasing them left
+    transparent holes, which look like whatever the receipt is shared onto —
+    invisible on a white chat, black blobs on a dark one. The image stays
+    fully opaque and the notches read the same everywhere.
   */
-  context.globalCompositeOperation = 'destination-out';
-  const notch = 18;
-  for (let x = 0; x < WIDTH; x += notch) {
+  context.fillStyle = tokens.colors.sand[50];
+  const notch = 19;
+  for (let x = MARGIN; x < WIDTH - MARGIN; x += notch) {
     context.beginPath();
-    context.arc(x + notch / 2, height, notch / 2, 0, Math.PI * 2);
+    context.arc(Math.min(x + notch / 2, WIDTH - MARGIN), cardBottom, notch / 2, 0, Math.PI * 2);
     context.fill();
   }
-  context.globalCompositeOperation = 'source-over';
 
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((blob) => {
