@@ -107,6 +107,135 @@ function recordProblem(detail: string): void {
   lastProblem = { at: new Date().toISOString(), detail };
 }
 
+/**
+ * Ask Groq what it will actually accept, with this key, right now.
+ *
+ * Hosted models get retired, and when one does every review quietly becomes
+ * "send it to a person" — a correct behaviour that looks identical to the
+ * reviewer simply being unsure. Guessing a replacement model id from memory
+ * is how that outage gets extended by a day.
+ *
+ * So the platform asks instead. Three questions, in order, because each one
+ * rules out a different cause:
+ *
+ *  1. Does the key work at all?       — list the models
+ *  2. Is the configured model there?  — compare against that list
+ *  3. Does it take an image?          — send one and see
+ *
+ * The third matters on its own: a model id can be perfectly valid and still
+ * refuse pictures, which is exactly the failure that looks like nothing
+ * happening. A one-pixel PNG is enough to find out, and costs nothing.
+ *
+ * The key is never returned, logged, or echoed. Only what it could reach.
+ */
+export interface ReviewerProbe {
+  keyPresent: boolean;
+  /** Groq answered the models call. */
+  reachable: boolean;
+  configuredModel: string;
+  /** The configured model appears in this account's catalogue. */
+  configuredAvailable: boolean;
+  /** Every model id this key can use, so a working one can be chosen. */
+  models: string[];
+  /** Whether the configured model accepted an actual image. */
+  acceptsImages: boolean | null;
+  /** Groq's own words when something was refused. */
+  detail: string | null;
+}
+
+/** A 1x1 transparent PNG. The smallest honest test of "do you take images?". */
+const ONE_PIXEL_PNG =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+export async function probeReviewer(): Promise<ReviewerProbe> {
+  const result: ReviewerProbe = {
+    keyPresent: Boolean(env.GROQ_API_KEY),
+    reachable: false,
+    configuredModel: env.GROQ_VISION_MODEL,
+    configuredAvailable: false,
+    models: [],
+    acceptsImages: null,
+    detail: null,
+  };
+
+  if (!env.GROQ_API_KEY) {
+    result.detail = 'GROQ_API_KEY is not set on the API.';
+    return result;
+  }
+
+  try {
+    const response = await fetch(`${env.GROQ_BASE_URL}/models`, {
+      headers: { authorization: `Bearer ${env.GROQ_API_KEY}` },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      result.detail = `Groq refused the key (HTTP ${String(response.status)}): ${(
+        await response.text().catch(() => '')
+      ).slice(0, 300)}`;
+      return result;
+    }
+
+    const body = (await response.json()) as { data?: { id?: unknown }[] };
+    result.reachable = true;
+    result.models = (body.data ?? [])
+      .map((model) => (typeof model.id === 'string' ? model.id : ''))
+      .filter(Boolean)
+      .sort();
+    result.configuredAvailable = result.models.includes(env.GROQ_VISION_MODEL);
+  } catch (error) {
+    result.detail = `Could not reach Groq: ${error instanceof Error ? error.message : String(error)}`;
+    return result;
+  }
+
+  if (!result.configuredAvailable) {
+    result.detail = `${env.GROQ_VISION_MODEL} is not in this account's model list. Set GROQ_VISION_MODEL to one of the ids below that reads images.`;
+    return result;
+  }
+
+  // The configured model exists. Does it take a picture?
+  try {
+    const response = await fetch(`${env.GROQ_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${env.GROQ_API_KEY}`,
+        'content-type': 'application/json',
+      },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      body: JSON.stringify({
+        model: env.GROQ_VISION_MODEL,
+        max_tokens: 4,
+        temperature: 0,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Reply with the single word: ok' },
+              { type: 'image_url', image_url: { url: ONE_PIXEL_PNG } },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (response.ok) {
+      result.acceptsImages = true;
+      result.detail = null;
+      return result;
+    }
+
+    result.acceptsImages = false;
+    result.detail = `${env.GROQ_VISION_MODEL} exists but refused an image (HTTP ${String(
+      response.status,
+    )}): ${(await response.text().catch(() => '')).slice(0, 300)}`;
+  } catch (error) {
+    result.acceptsImages = false;
+    result.detail = `The image test failed: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
+  return result;
+}
+
 const SYSTEM_PROMPT = `You verify screenshots submitted as proof that someone completed a small paid task.
 
 You will be given the task's own wording and one screenshot. Decide whether the screenshot shows the task was genuinely done.

@@ -10,6 +10,7 @@ import {
   type SignupSource,
 } from '@fundxtra/shared';
 import { useAdmin } from '@/lib/admin-session';
+import { api, errorMessage } from '@/lib/api';
 import { supportUrl } from '@/lib/config';
 import { AdminButton, AdminCard, Metric } from './primitives';
 import { UsersView } from './UsersView';
@@ -709,8 +710,34 @@ function OverviewView() {
  * review is automatic and finds a growing queue has nothing to look at. This
  * is that thing to look at: the state, the reason, and the exact fix.
  */
+interface ReviewerProbe {
+  keyPresent: boolean;
+  reachable: boolean;
+  configuredModel: string;
+  configuredAvailable: boolean;
+  models: string[];
+  acceptsImages: boolean | null;
+  detail: string | null;
+}
+
 function AutoReviewCard() {
   const { data } = useAdmin();
+  const [probe, setProbe] = useState<ReviewerProbe | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [probeError, setProbeError] = useState<string | null>(null);
+
+  const check = async () => {
+    setProbing(true);
+    setProbeError(null);
+    try {
+      setProbe(await api.post<ReviewerProbe>('/admin/maintenance/reviewer'));
+    } catch (caught) {
+      setProbeError(errorMessage(caught));
+    } finally {
+      setProbing(false);
+    }
+  };
+
   if (!data) return null;
 
   const review = data.autoReview;
@@ -773,13 +800,118 @@ function AutoReviewCard() {
         )}
 
         <p style={{ fontSize: tokens.typography.size['2xs'], color: tokens.semantic.inkSubtle }}>
-          Model: <code>{review.model}</code>. Hosted models get retired — if the problem above
-          mentions the model, set <code>GROQ_VISION_MODEL</code> to a current one. Anything the
-          reviewer is unsure about is sent to your Telegram with two buttons, and nothing is ever
-          rejected by it without a reason the user can read.
+          Model: <code>{review.model}</code>. Anything the reviewer is unsure about is sent to your
+          Telegram with two buttons, and nothing is ever rejected by it without a reason the user
+          can read.
         </p>
+
+        {/*
+          Hosted models get retired, and when one does every review quietly
+          becomes "send it to a person" — which looks exactly like the reviewer
+          being unsure. This asks Groq itself rather than leaving anyone to
+          guess a replacement model id.
+        */}
+        <AdminButton loading={probing} onClick={() => void check()}>
+          Check the reviewer
+        </AdminButton>
+
+        {probeError && (
+          <p style={{ fontSize: tokens.typography.size.xs, color: tokens.colors.danger.strong }}>
+            {probeError}
+          </p>
+        )}
+
+        {probe && (
+          <div
+            style={{
+              display: 'grid',
+              gap: 8,
+              padding: 12,
+              borderRadius: tokens.radii.sm,
+              background: tokens.semantic.bgSubtle,
+            }}
+          >
+            <ProbeLine label="API key" ok={probe.keyPresent && probe.reachable} />
+            <ProbeLine
+              label={`Model "${probe.configuredModel}" exists`}
+              ok={probe.configuredAvailable}
+            />
+            <ProbeLine label="It reads images" ok={probe.acceptsImages === true} />
+
+            {probe.detail && (
+              <p
+                style={{
+                  fontSize: tokens.typography.size.xs,
+                  lineHeight: tokens.typography.leading.relaxed,
+                  color: tokens.colors.danger.strong,
+                  wordBreak: 'break-word',
+                }}
+              >
+                {probe.detail}
+              </p>
+            )}
+
+            {probe.models.length > 0 && !(probe.configuredAvailable && probe.acceptsImages) && (
+              <details>
+                <summary
+                  style={{
+                    fontSize: tokens.typography.size.xs,
+                    color: tokens.semantic.brandInk,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {probe.models.length} models this key can use — pick one and set{' '}
+                  <code>GROQ_VISION_MODEL</code> on Railway
+                </summary>
+                <ul
+                  style={{
+                    margin: '8px 0 0',
+                    paddingLeft: 18,
+                    fontSize: tokens.typography.size['2xs'],
+                    color: tokens.semantic.inkMuted,
+                    lineHeight: tokens.typography.leading.relaxed,
+                  }}
+                >
+                  {probe.models.map((model) => (
+                    <li key={model}>
+                      <code>{model}</code>
+                    </li>
+                  ))}
+                </ul>
+                <p
+                  style={{
+                    marginTop: 8,
+                    fontSize: tokens.typography.size['2xs'],
+                    color: tokens.semantic.inkSubtle,
+                  }}
+                >
+                  Set one, redeploy, then press <strong>Check the reviewer</strong> again. The
+                  third line has to say yes — a model can be perfectly valid and still refuse
+                  pictures, which is the failure that looks like nothing happening.
+                </p>
+              </details>
+            )}
+          </div>
+        )}
       </div>
     </AdminCard>
+  );
+}
+
+/** One pass/fail line in the reviewer check. */
+function ProbeLine({ label, ok: passed }: { label: string; ok: boolean }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span
+        style={{
+          fontSize: tokens.typography.size.sm,
+          color: passed ? tokens.colors.success.strong : tokens.colors.danger.strong,
+        }}
+      >
+        {passed ? '✓' : '✕'}
+      </span>
+      <span style={{ fontSize: tokens.typography.size.xs }}>{label}</span>
+    </div>
   );
 }
 

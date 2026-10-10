@@ -239,3 +239,32 @@ describe('what the stale check costs', () => {
     expect(store.metrics.reads).toBeLessThan(12);
   });
 });
+
+/**
+ * The brief says when the reviewer has stopped working.
+ *
+ * A reviewer that fails is invisible by design — every failure ends as "send
+ * it to a person", which looks exactly like it being unsure. The first sign
+ * is otherwise a queue that will not go down.
+ */
+describe('automatic review in the brief', () => {
+  const brief = {
+    pendingSubmissions: 0,
+    oldestSubmissionHours: null,
+    pendingWithdrawalCount: 0,
+    pendingWithdrawalsKobo: 0,
+    paidYesterdayKobo: 0,
+    paidYesterdayCount: 0,
+    paidTodayKobo: 0,
+    owedToUsersKobo: 0,
+    newUsersToday: 0,
+    flaggedUsers: 0,
+  };
+
+  it('warns when no key is configured', () => {
+    // GROQ_API_KEY is unset in this test environment.
+    const text = formatOwnerBrief(brief);
+    expect(text).toContain('Automatic review is off');
+    expect(text).toContain('GROQ_API_KEY');
+  });
+});

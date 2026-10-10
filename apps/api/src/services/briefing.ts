@@ -3,6 +3,7 @@ import { formatNaira, type Kobo } from '@fundxtra/shared';
 import { env } from '../config/env';
 import { COLLECTIONS, db } from '../lib/firebase';
 import { logger } from '../lib/logger';
+import { reviewerStatus } from './screenshot-review';
 import { millisOf, runFilteredQuery, runOrderedQuery } from '../lib/query-fallback';
 import { platformDayKey, startOfPlatformDay } from '../lib/time';
 import { sendBotMessage } from '../lib/telegram-bot';
@@ -100,6 +101,20 @@ export function formatOwnerBrief(brief: OwnerBrief): string {
 
   if (brief.flaggedUsers > 0) {
     lines.push(`Flagged accounts: ${String(brief.flaggedUsers)}`);
+  }
+
+  /*
+    Said only when it is broken, and for the same reason the oldest-submission
+    warning is: a line that appears every day stops being read. A reviewer
+    that has stopped working is otherwise invisible — every failure in it ends
+    as "send it to a person", which is indistinguishable from it simply being
+    unsure, and the first sign is a queue that will not go down.
+  */
+  const reviewer = reviewerStatus();
+  if (!reviewer.configured) {
+    lines.push('', '⚠️ Automatic review is off — GROQ_API_KEY is not set, so every screenshot is waiting for a person.');
+  } else if (reviewer.lastProblem) {
+    lines.push('', `⚠️ Automatic review is failing: ${reviewer.lastProblem.detail.slice(0, 160)}`);
   }
 
   return lines.join('\n');
