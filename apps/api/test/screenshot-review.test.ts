@@ -24,7 +24,7 @@ vi.mock('../src/services/uploads', () => ({
   fetchProof: async () => ({ bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]), contentType: 'image/png' }),
 }));
 
-const { reviewScreenshot, reviewerConfigured, resetReviewerStatus, visionModel, probeReviewer } =
+const { reviewScreenshot, reviewerConfigured, resetReviewerStatus, reviewerStatus, visionModel } =
   await import('../src/services/screenshot-review');
 
 const task = {
@@ -243,34 +243,29 @@ describe('choosing a model', () => {
     expect(lastBody).toBeNull();
   });
 
-  it('reports the honest answer to the admin console', async () => {
+  it('records why, when no model on the key can see', async () => {
     mockGroq({ observed: 'x', verdict: 'ESCALATE', confidence: 0.1, reason: '' }, {
       models: ['whisper-large-v3', 'text-only-9b'],
       vision: [],
     });
 
-    const probe = await probeReviewer();
-    expect(probe.keyPresent).toBe(true);
-    expect(probe.reachable).toBe(true);
-    expect(probe.model).toBeNull();
-    expect(probe.acceptsImages).toBe(false);
-    expect(probe.detail).toContain('refused an image');
-    expect(probe.models).toHaveLength(2);
-    // The evidence, not just the conclusion.
-    expect(probe.tested.every((test) => test.verdict === 'blind')).toBe(true);
+    expect(await visionModel()).toBeNull();
+
+    // The daily brief reads this, so it has to say something actionable.
+    const status = reviewerStatus();
+    expect(status.model).toBeNull();
+    expect(status.lastProblem?.detail).toContain('refused an image');
   });
 
-  it('names the chosen model to the admin console when there is one', async () => {
+  it('reports the model it settled on', async () => {
     mockGroq({ observed: 'x', verdict: 'ESCALATE', confidence: 0.1, reason: '' }, {
       models: ['whisper-large-v3', 'qwen/qwen9-vision'],
       vision: ['qwen/qwen9-vision'],
     });
 
-    const probe = await probeReviewer();
-    expect(probe.model).toBe('qwen/qwen9-vision');
-    expect(probe.acceptsImages).toBe(true);
-    expect(probe.pinned).toBe(false);
-    expect(probe.detail).toBeNull();
+    await visionModel();
+    expect(reviewerStatus().model).toBe('qwen/qwen9-vision');
+    expect(reviewerStatus().lastProblem).toBeNull();
   });
 });
 
@@ -328,12 +323,10 @@ describe('refusals that are not about sight', () => {
     expect(review.verdict).toBe('APPROVE');
   });
 
-  it('says so in the console rather than claiming the key is blind', async () => {
+  it('says so plainly rather than claiming the key is blind', async () => {
     mockRateLimited(['qwen/qwen9-vision']);
 
-    const probe = await probeReviewer();
-    expect(probe.model).toBe('qwen/qwen9-vision');
-    expect(probe.detail).toContain('not about images');
-    expect(probe.tested[0]?.verdict).toBe('inconclusive');
+    expect(await visionModel()).toBe('qwen/qwen9-vision');
+    expect(reviewerStatus().lastProblem?.detail).toContain('not about images');
   });
 });

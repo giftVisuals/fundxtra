@@ -65,22 +65,11 @@ export interface ProviderStatus {
   nasfampay: { implemented: boolean; hasCredentials: boolean; note: string };
 }
 
-/** Why screenshots are, or are not, being decided without a person. */
-export interface AutoReviewStatus {
-  configured: boolean;
-  enabled: boolean;
-  model: string;
-  lastProblem: { at: string; detail: string } | null;
-  lastVerdict: { at: string; verdict: string; confidence: number } | null;
-  reviewed: number;
-}
-
 interface DashboardPayload {
   stats: AdminStats;
   admin: AdminIdentity;
   settings: SystemSettings;
   provider: ProviderStatus;
-  autoReview: AutoReviewStatus;
   environment: { nodeEnv: string; telegramConfigured: boolean; devAuthEnabled: boolean };
 }
 

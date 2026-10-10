@@ -63,7 +63,6 @@ import {
   topUpBudget,
   updateTask,
 } from '../services/tasks';
-import { probeReviewer, reviewerStatus } from '../services/screenshot-review';
 import { fetchProof, signedProofUrl } from '../services/uploads';
 import { buildOwnerBrief, formatOwnerBrief } from '../services/briefing';
 import { clearFlag, requireUser } from '../services/users';
@@ -121,16 +120,6 @@ adminRouter.get('/dashboard', requirePermission('users:view'), async (req, res, 
           hasCredentials: nasfampay.hasCredentials,
           note: 'NasfamPay public API is still in development. Rewards stay "coming soon" until it launches.',
         },
-      },
-      /*
-        Why screenshots are, or are not, being decided automatically. Every
-        failure in the reviewer ends as "escalate to a person", which is
-        correct and completely invisible — so the reason is reported here
-        rather than left to be inferred from a growing queue.
-      */
-      autoReview: {
-        ...reviewerStatus(),
-        enabled: settings.tasks.autoReviewEnabled,
       },
       environment: {
         nodeEnv: env.NODE_ENV,
@@ -807,26 +796,6 @@ adminRouter.post('/maintenance/indexes', requirePermission('settings:manage'), a
  * owes: that is the owner's business, not the business of whoever is reviewing
  * screenshots today.
  */
-/**
- * Ask Groq what this key can actually do.
- *
- * Exists because the alternative is reading server logs, and the person who
- * needs this answer runs the platform from a phone. It returns no secret —
- * only whether the key worked, which model ids it reaches, and whether the
- * configured one takes an image.
- */
-adminRouter.post(
-  '/maintenance/reviewer',
-  requirePermission('settings:manage'),
-  async (_req, res, next) => {
-    try {
-      ok(res, await probeReviewer());
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
 adminRouter.post('/maintenance/brief', requirePermission('settings:manage'), async (_req, res, next) => {
   try {
     const brief = await buildOwnerBrief();

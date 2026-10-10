@@ -160,8 +160,8 @@ Two things follow from that:
   Telegram message to "Approved", so nobody taps it twice.
 
 If the queue suddenly fills with ordinary, obvious screenshots, automatic
-review has stopped. Tell the owner — **Admin → Overview** has a panel that
-says why.
+review has stopped. Tell the owner — their daily brief carries the reason,
+and until it is fixed every screenshot is yours to decide.
 
 ---
 

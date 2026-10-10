@@ -153,8 +153,6 @@ const PREFERRED = [/scout|maverick/i, /vision|vl\b|llava/i, /120b|90b|70b/i, /qw
 
 let chosen: { id: string; at: number } | null = null;
 let discovering: Promise<string | null> | null = null;
-/** What each candidate said when it was shown a picture. For the console. */
-let lastTests: ImageTest[] = [];
 
 /**
  * The test image: 32x32, a black square on white, 102 bytes.
@@ -298,9 +296,9 @@ async function discoverVisionModel(): Promise<string | null> {
     it happens a few times a day at most, and a user waiting on a screenshot
     should not pay for a serial walk through a model catalogue.
   */
-  lastTests = await Promise.all(candidates.map((id) => testImage(id)));
+  const tests = await Promise.all(candidates.map((id) => testImage(id)));
 
-  const reads = lastTests.find((test) => test.verdict === 'reads');
+  const reads = tests.find((test) => test.verdict === 'reads');
   if (reads) {
     chosen = { id: reads.id, at: Date.now() };
     logger.info({ model: reads.id, candidates: candidates.length }, 'Chose a vision model');
@@ -316,7 +314,7 @@ async function discoverVisionModel(): Promise<string | null> {
     synthetic one, and the worst case is one failed review that escalates to
     a person, which is where it was going regardless.
   */
-  const maybe = lastTests.find((test) => test.verdict === 'inconclusive');
+  const maybe = tests.find((test) => test.verdict === 'inconclusive');
   if (maybe) {
     chosen = { id: maybe.id, at: Date.now() };
     logger.warn(
@@ -333,90 +331,6 @@ async function discoverVisionModel(): Promise<string | null> {
     `All ${String(candidates.length)} usable models on this key explicitly refused an image, so every screenshot goes to a person. The key works; the account has no vision model on it.`,
   );
   return null;
-}
-
-/**
- * What the reviewer can do with this key, reported for the admin console.
- *
- * Runs the same discovery the reviewer runs, so what it reports is what will
- * actually happen — not a parallel code path that can disagree with it.
- */
-export interface ReviewerProbe {
-  keyPresent: boolean;
-  /** Groq answered the models call. */
-  reachable: boolean;
-  /** The model that will be used, or null when none reads images. */
-  model: string | null;
-  /** True when a human pinned it with GROQ_VISION_MODEL. */
-  pinned: boolean;
-  /** Every model id this key can use. */
-  models: string[];
-  /** Whether `model` accepted an actual image. */
-  acceptsImages: boolean | null;
-  /** Groq's own words when something was refused. */
-  detail: string | null;
-  /**
-   * What each candidate said when it was shown a picture.
-   *
-   * The evidence, not the conclusion. "No vision model on this key" is a
-   * serious thing to tell someone, and it should be possible to check it
-   * rather than take it on trust — several of these refusals turn out to be
-   * about rate limits or the test image rather than about sight.
-   */
-  tested: { id: string; verdict: string; detail: string | null }[];
-}
-
-export async function probeReviewer(): Promise<ReviewerProbe> {
-  const result: ReviewerProbe = {
-    keyPresent: Boolean(env.GROQ_API_KEY),
-    reachable: false,
-    model: null,
-    pinned: Boolean(env.GROQ_VISION_MODEL),
-    models: [],
-    acceptsImages: null,
-    detail: null,
-    tested: [],
-  };
-
-  if (!env.GROQ_API_KEY) {
-    result.detail = 'GROQ_API_KEY is not set on the API.';
-    return result;
-  }
-
-  try {
-    result.models = (await listModels()).sort();
-    result.reachable = true;
-  } catch (error) {
-    result.detail = error instanceof Error ? error.message : String(error);
-    return result;
-  }
-
-  // Always re-derive on an explicit check: the point of pressing it is to
-  // find out what is true now, not what was true six hours ago.
-  forgetVisionModel();
-  result.model = await visionModel();
-  result.tested = lastTests.map((test) => ({
-    id: test.id,
-    verdict: test.verdict,
-    detail: test.detail,
-  }));
-
-  if (!result.model) {
-    result.acceptsImages = false;
-    result.detail =
-      lastProblem?.detail ??
-      'No model on this key accepts images, so every screenshot goes to a person.';
-    return result;
-  }
-
-  const test = await testImage(result.model);
-  result.acceptsImages = test.verdict === 'reads';
-  if (!result.acceptsImages) {
-    result.detail = result.pinned
-      ? `${result.model} is pinned with GROQ_VISION_MODEL and refused the test image. ${test.detail ?? ''} Unset that variable and the platform will choose for itself.`
-      : lastProblem?.detail ?? test.detail;
-  }
-  return result;
 }
 
 const SYSTEM_PROMPT = `You verify screenshots submitted as proof that someone completed a small paid task.

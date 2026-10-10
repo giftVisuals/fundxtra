@@ -114,13 +114,10 @@ real image, and uses the first that accepts one. Hosted models get retired;
 this re-chooses by itself, with no deploy and nothing to set.
 
 Without the key nothing breaks — every screenshot simply waits for a person,
-the way it did before. But you will not be told, because an unconfigured
-reviewer and an unsure reviewer look identical from the outside. So check:
-**Admin → Overview → Automatic screenshot review**, and press
-**Check the reviewer**. It says which model it picked, or exactly why it
-could not — including the honest case where no model on your key reads
-images at all, which means a different Groq account or provider, not a
-different setting.
+the way it did before. And if it ever stops working, **your daily brief says
+so**: automatic review failing is otherwise invisible, because every failure
+in it ends as "send it to a person", which looks exactly like the reviewer
+being unsure. The first sign would be a queue that will not go down.
 
 The reviewer never rejects without a reason the user can read, and a rejected
 task stays available for them to try again.
