@@ -20,7 +20,11 @@ import { nowIso, startOfPlatformDay, toIso, toIsoRequired } from '../lib/time';
 import { idempotencyKey, postEntryIn, reverseEntry } from './ledger';
 import { getSettings, withdrawalAvailability } from './settings';
 import { bumpStats } from './stats';
-import { notifyWithdrawalPaid, notifyWithdrawalReturned } from './notify';
+import {
+  notifyWithdrawalPaid,
+  notifyWithdrawalRequested,
+  notifyWithdrawalReturned,
+} from './notify';
 import { flagUser } from './users';
 
 /**
@@ -149,16 +153,36 @@ export async function requestWithdrawal(args: WithdrawalRequestArgs): Promise<Wi
       updatedAt: Timestamp.now(),
     });
 
-    return mapWithdrawal(withdrawalId, record);
+    return {
+      withdrawal: mapWithdrawal(withdrawalId, record),
+      balanceAfterKobo: entry.balanceAfterKobo,
+    };
   });
 
   await detectWithdrawalAnomaly(args.user, amountKobo);
+
+  /*
+    Told immediately, because this is the moment the balance drops.
+
+    A user requests ₦2,000, sees ₦2,000 leave, and nothing has been paid out
+    yet — which read as money vanishing. The receipt says where it went and
+    that another message is coming.
+  */
+  notifyWithdrawalRequested({
+    telegramId: args.user.telegramId,
+    amountKobo,
+    bankName: bank.name,
+    accountName: args.accountName,
+    accountNumber: args.accountNumber,
+    balanceAfterKobo: withdrawal.balanceAfterKobo,
+    reference: withdrawalId,
+  });
 
   logger.info(
     { withdrawalId, userId: args.user.id, amountKobo },
     'Withdrawal requested and balance debited',
   );
-  return withdrawal;
+  return withdrawal.withdrawal;
 }
 
 /**
@@ -272,6 +296,7 @@ export async function transitionWithdrawal(input: {
       telegramId: withdrawal.userTelegramId,
       netKobo: withdrawal.netKobo,
       bankName: withdrawal.bank.bankName,
+      accountName: withdrawal.bank.accountName,
       accountNumber: withdrawal.bank.accountNumber,
       reference: withdrawal.id,
     });

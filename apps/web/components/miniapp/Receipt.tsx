@@ -16,7 +16,7 @@ import {
   renderReceiptPng,
   shareReceipt,
   type ReceiptImageInput,
-  type ReceiptSection,
+  type ReceiptLine,
 } from '@/lib/receipt-image';
 import { Logo } from '@/components/ui/Logo';
 import { config } from '@/lib/config';
@@ -130,58 +130,44 @@ export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
   const status = useMemo(() => toneFor(receipt), [receipt]);
   const credit = transaction.direction === 'CREDIT';
 
-  const sections = useMemo<ReceiptSection[]>(() => {
-    const built: ReceiptSection[] = [];
+  /*
+    One flat list, in the order somebody reads it: what happened, who it went
+    to, what it cost, and the reference they would quote.
+
+    It used to be three titled groups. The headings and their gaps were about
+    a third of the receipt's height, to organise eleven rows that read
+    perfectly well in one column — and the result was a document taller than
+    the phone it is looked at on.
+  */
+  const lines = useMemo<ReceiptLine[]>(() => {
+    const built: ReceiptLine[] = [];
 
     if (withdrawal) {
+      built.push({ label: 'Type', value: 'Bank transfer' });
+      if (withdrawal.accountName) built.push({ label: 'Sent to', value: withdrawal.accountName });
       built.push({
-        title: 'Beneficiary',
-        lines: [
-          { label: 'Account name', value: withdrawal.accountName || '—' },
-          { label: 'Bank', value: withdrawal.bankName },
-          { label: 'Account number', value: withdrawal.accountNumber || '—', mono: true },
-        ],
+        label: withdrawal.bankName,
+        value: withdrawal.accountNumber || '—',
+        mono: true,
       });
-      built.push({
-        title: 'Amounts',
-        lines: [
-          { label: 'Amount requested', value: formatNaira(withdrawal.amountKobo) },
-          { label: 'Fee', value: formatNaira(withdrawal.feeKobo) },
-          { label: 'Net to account', value: formatNaira(withdrawal.netKobo) },
-          { label: 'Wallet balance after', value: formatNaira(transaction.balanceAfterKobo) },
-        ],
-      });
+      if (withdrawal.feeKobo > 0) {
+        built.push({ label: 'Fee', value: formatNaira(withdrawal.feeKobo) });
+        built.push({ label: 'Net to account', value: formatNaira(withdrawal.netKobo) });
+      }
     } else {
-      built.push({
-        title: 'Detail',
-        lines: [
-          { label: 'Type', value: TRANSACTION_LABELS[transaction.type] },
-          { label: 'Description', value: transaction.description },
-          { label: 'Balance after', value: formatNaira(transaction.balanceAfterKobo) },
-        ],
-      });
+      built.push({ label: 'Type', value: TRANSACTION_LABELS[transaction.type] });
+      built.push({ label: 'Detail', value: transaction.description });
     }
 
-    const trace: ReceiptSection = {
-      title: 'Trace',
-      lines: [
-        { label: 'Reference', value: withdrawal ? withdrawal.id : transaction.id, mono: true },
-      ],
-    };
-    if (withdrawal) {
-      trace.lines.push({ label: 'Ledger entry', value: transaction.id, mono: true });
-    }
-    trace.lines.push({ label: 'Date & time', value: formatMoment(transaction.createdAt) });
-    if (withdrawal) {
-      trace.lines.push({
-        label: 'Reviewed',
-        value: withdrawal.reviewedAt ? formatMoment(withdrawal.reviewedAt) : 'Pending',
-      });
-    }
+    built.push({ label: 'Balance after', value: formatNaira(transaction.balanceAfterKobo) });
+    built.push({
+      label: 'Reference',
+      value: withdrawal ? withdrawal.id : transaction.id,
+      mono: true,
+    });
     if (withdrawal?.failureReason) {
-      trace.lines.push({ label: 'Reason', value: withdrawal.failureReason });
+      built.push({ label: 'Reason', value: withdrawal.failureReason });
     }
-    built.push(trace);
 
     return built;
   }, [withdrawal, transaction]);
@@ -208,20 +194,15 @@ export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
 
   const imageInput = useMemo(
     () => ({
-      kind: withdrawal ? 'Withdrawal receipt' : 'Transaction receipt',
       statusLabel: status.label,
       statusTone: status.tone,
       amountKobo: withdrawal ? withdrawal.amountKobo : Math.abs(transaction.amountKobo),
       ...(credit ? { amountPrefix: '+' } : {}),
-      amountInWords: nairaInWords(
-        withdrawal ? withdrawal.amountKobo : Math.abs(transaction.amountKobo),
-      ),
-      sections,
-      footer: `Electronic receipt — no signature required. Quote the reference to ${receipt.supportHandle} if anything looks wrong.`,
+      when: formatMoment(transaction.createdAt),
+      lines,
       source: RECEIPT_SOURCE,
-      issuedAt: formatMoment(receipt.issuedAt),
     }),
-    [withdrawal, transaction, status, credit, sections, receipt],
+    [withdrawal, transaction, status, credit, lines],
   );
 
   useEffect(() => {
@@ -377,9 +358,8 @@ export function Receipt({ receipt }: { receipt: TransactionReceipt }) {
         </div>
 
         <div style={{ padding: '4px 18px 0' }}>
-          {sections.map((section) => (
-            <section key={section.title} style={sectionStyle}>
-              <h4 style={sectionTitleStyle}>{section.title}</h4>
+          {[{ title: '', lines }].map((section) => (
+            <section key="receipt-lines" style={sectionStyle}>
               <dl style={{ margin: 0 }}>
                 {section.lines.map((line) => (
                   <div key={line.label} style={rowStyle}>
@@ -527,14 +507,6 @@ const sectionStyle: React.CSSProperties = {
   borderBottom: `1px dashed ${tokens.semantic.border}`,
 };
 
-const sectionTitleStyle: React.CSSProperties = {
-  fontSize: 9.5,
-  fontWeight: tokens.typography.weight.bold,
-  letterSpacing: '0.14em',
-  textTransform: 'uppercase',
-  color: tokens.semantic.inkFaint,
-  marginBottom: 6,
-};
 
 const rowStyle: React.CSSProperties = {
   display: 'flex',

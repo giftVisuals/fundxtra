@@ -175,6 +175,77 @@ describe('the other money events', () => {
   });
 });
 
+/**
+ * A receipt for every money event, the moment it happens.
+ *
+ * The one that was missing is the first one: a user requests a payout, their
+ * balance drops by the full amount, and nothing had ever told them why. That
+ * silence is where "this app stole my money" starts.
+ */
+describe('receipts', () => {
+  it('explains the balance dropping the moment a payout is requested', async () => {
+    notify.notifyWithdrawalRequested({
+      telegramId: '555001',
+      amountKobo: 250_000,
+      bankName: 'OPay',
+      accountName: 'Gift Awe',
+      accountNumber: '7039314788',
+      balanceAfterKobo: 50_000,
+      reference: 'wd_8F2KQ7MX',
+    });
+    await flush();
+
+    const text = sent[0]?.text ?? '';
+    expect(text).toContain('Withdrawal requested');
+    expect(text).toContain('₦2,500');
+    expect(text).toContain('Gift Awe');
+    // Masked, always: a receipt gets forwarded.
+    expect(text).toContain('••••4788');
+    expect(text).not.toContain('7039314788');
+    expect(text).toContain('Balance after');
+    expect(text).toContain('wd_8F2KQ7MX');
+    // The reassurance that stops a support message.
+    expect(text).toContain('already out of your balance');
+  });
+
+  it('carries the amount, the destination and the reference when it is paid', async () => {
+    notify.notifyWithdrawalPaid({
+      telegramId: '555001',
+      netKobo: 250_000,
+      bankName: 'OPay',
+      accountName: 'Gift Awe',
+      accountNumber: '7039314788',
+      reference: 'wd_8F2KQ7MX',
+    });
+    await flush();
+
+    const text = sent[0]?.text ?? '';
+    expect(text).toContain('Payment sent to your bank');
+    expect(text).toContain('₦2,500');
+    expect(text).toContain('••••4788');
+    expect(text).toContain('wd_8F2KQ7MX');
+  });
+
+  it('stamps every receipt in Lagos time, not the server’s', async () => {
+    notify.notifyTaskApproved({
+      telegramId: '555001',
+      taskTitle: 'Follow Crediplex on X',
+      rewardKobo: 5_000,
+      balanceAfterKobo: 55_000,
+    });
+    await flush();
+
+    const text = sent[0]?.text ?? '';
+    const lagos = new Intl.DateTimeFormat('en-NG', {
+      timeZone: 'Africa/Lagos',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date());
+    expect(text).toContain(lagos);
+  });
+});
+
 describe('delivery failure', () => {
   it('survives a client that throws synchronously, not just a rejection', async () => {
     /*

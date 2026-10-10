@@ -55,6 +55,63 @@ function send(telegramId: string, text: string, markup?: ReplyMarkup): void {
   }
 }
 
+/**
+ * A receipt, in a chat message.
+ *
+ * Every money event now sends one of these the moment it happens, rather than
+ * waiting for someone to open the app and find it. That matters most for the
+ * one people worry about: a payout. Somebody who has just been paid wants
+ * proof in their hand, and a Telegram message is the only thing that reaches
+ * them while they are still wondering.
+ *
+ * The shape deliberately matches the receipt the app paints — headline,
+ * amount, when, the rows, the reference — so the two never look like
+ * different documents for the same transaction.
+ */
+function receipt(input: {
+  icon: string;
+  headline: string;
+  amountKobo: number;
+  /** The rows, in reading order. Falsy values are dropped. */
+  rows: [string, string | null | undefined][];
+  reference?: string | undefined;
+  /** One line of plain advice under the rows, if there is any worth giving. */
+  note?: string | undefined;
+}): string {
+  const lines = [
+    `${input.icon} <b>${input.headline}</b>\n\n`,
+    `<b>${formatNaira(Math.abs(input.amountKobo))}</b>\n`,
+    `${stamp()}\n`,
+  ];
+
+  for (const [label, value] of input.rows) {
+    if (value) lines.push(`\n${label} · ${value}`);
+  }
+
+  if (input.reference) lines.push(`\n\nRef <code>${input.reference}</code>`);
+  if (input.note) lines.push(`\n\n${input.note}`);
+
+  return lines.join('');
+}
+
+/**
+ * When, in Lagos.
+ *
+ * Fixed to the platform's timezone rather than the server's: a receipt that
+ * says 13:02 to somebody who was paid at 14:02 reads as the wrong receipt.
+ */
+function stamp(): string {
+  return new Intl.DateTimeFormat('en-NG', {
+    timeZone: 'Africa/Lagos',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date());
+}
+
 /** Money moved by an admin, in either direction. */
 export function notifyBalanceAdjusted(input: {
   telegramId: string;
@@ -100,12 +157,16 @@ export function notifyTaskApproved(input: {
 }): void {
   send(
     input.telegramId,
-    [
-      `✅ <b>Task approved — ${formatNaira(input.rewardKobo)} earned</b>\n\n`,
-      `Your proof for “${input.taskTitle}” was checked and approved.\n\n`,
-      `<b>Earned:</b> ${formatNaira(input.rewardKobo)}\n`,
-      `<b>New balance:</b> ${formatNaira(input.balanceAfterKobo)}`,
-    ].join(''),
+    receipt({
+      icon: '✅',
+      headline: 'Task approved',
+      amountKobo: input.rewardKobo,
+      rows: [
+        ['Task', input.taskTitle],
+        ['Type', 'Task reward'],
+        ['Balance after', formatNaira(input.balanceAfterKobo)],
+      ],
+    }),
     openApp('Find another task'),
   );
 }
@@ -138,13 +199,18 @@ export function notifyReferralQualified(input: {
 }): void {
   send(
     input.telegramId,
-    [
-      `🎉 <b>Referral confirmed — ${formatNaira(input.rewardKobo)} earned</b>\n\n`,
-      'A friend you invited joined Fundxtra and set up their PIN.\n\n',
-      `<b>Earned:</b> ${formatNaira(input.rewardKobo)}\n`,
-      `<b>New balance:</b> ${formatNaira(input.balanceAfterKobo)}\n`,
-      `<b>Friends joined:</b> ${String(input.qualifiedCount)}`,
-    ].join(''),
+    receipt({
+      icon: '🎉',
+      headline: 'Referral confirmed',
+      amountKobo: input.rewardKobo,
+      rows: [
+        ['Type', 'Referral reward'],
+        // What actually qualifies it, not the old rule it still described.
+        ['Detail', 'A friend you invited earned their first reward'],
+        ['Friends earning', String(input.qualifiedCount)],
+        ['Balance after', formatNaira(input.balanceAfterKobo)],
+      ],
+    }),
     openApp('Share my link'),
   );
 }
@@ -154,20 +220,62 @@ export function notifyWithdrawalPaid(input: {
   telegramId: string;
   netKobo: Kobo;
   bankName: string;
+  accountName: string;
   accountNumber: string;
   reference: string;
 }): void {
   send(
     input.telegramId,
-    [
-      `💸 <b>${formatNaira(input.netKobo)} sent to your bank</b>\n\n`,
-      `<b>Bank:</b> ${input.bankName}\n`,
-      `<b>Account:</b> ${maskAccount(input.accountNumber)}\n`,
-      `<b>Reference:</b> <code>${input.reference}</code>\n\n`,
+    receipt({
+      icon: '✅',
+      headline: 'Payment sent to your bank',
+      amountKobo: input.netKobo,
+      rows: [
+        ['Type', 'Bank transfer'],
+        ['To', input.accountName],
+        [input.bankName, maskAccount(input.accountNumber)],
+      ],
+      reference: input.reference,
       // Banks are the slow part, and saying so prevents a support message.
-      'Your bank may take a few minutes to show it.',
-    ].join(''),
+      note: 'Your bank may take a few minutes to show it.',
+    }),
     openApp('View receipt'),
+  );
+}
+
+/**
+ * A payout was asked for. The money has left the spendable balance already.
+ *
+ * This had no notification at all, which left the most alarming moment on the
+ * platform unexplained: a user requests ₦2,000 and watches their balance drop
+ * by ₦2,000 with nothing paid out yet. Saying so immediately, with the figure
+ * and where it is going, is the difference between waiting and panicking.
+ */
+export function notifyWithdrawalRequested(input: {
+  telegramId: string;
+  amountKobo: Kobo;
+  bankName: string;
+  accountName: string;
+  accountNumber: string;
+  balanceAfterKobo: Kobo;
+  reference: string;
+}): void {
+  send(
+    input.telegramId,
+    receipt({
+      icon: '🧾',
+      headline: 'Withdrawal requested',
+      amountKobo: input.amountKobo,
+      rows: [
+        ['Type', 'Bank transfer'],
+        ['To', input.accountName],
+        [input.bankName, maskAccount(input.accountNumber)],
+        ['Balance after', formatNaira(input.balanceAfterKobo)],
+      ],
+      reference: input.reference,
+      note: 'This amount is held while we pay it, so it is already out of your balance. You will get another message the moment it leaves.',
+    }),
+    openApp('Track it'),
   );
 }
 
@@ -180,24 +288,26 @@ export function notifyWithdrawalReturned(input: {
 }): void {
   send(
     input.telegramId,
-    [
-      `↩️ <b>Withdrawal returned — ${formatNaira(input.amountKobo)} back in your balance</b>\n\n`,
-      `<b>Reason:</b> ${input.reason}\n`,
-      `<b>Balance:</b> ${formatNaira(input.balanceAfterKobo)}\n\n`,
-      // The first thing anyone wants to know is whether the money is gone.
-      'Nothing was lost. Check the account details and try again.',
-    ].join(''),
+    receipt({
+      icon: '↩️',
+      headline: 'Money is back in your balance',
+      amountKobo: input.amountKobo,
+      rows: [
+        ['Type', 'Returned'],
+        ['Reason', input.reason],
+        ['Balance after', formatNaira(input.balanceAfterKobo)],
+      ],
+      /*
+        The money first, the reason second. Somebody reading this has just
+        had a payout refused and the only question in their head is whether
+        their money is gone.
+      */
+      note: 'Nothing was lost. Fix what the reason says and request it again.',
+    }),
     openApp('Try again'),
   );
 }
 
-/**
- * Shows enough of an account number to recognise, not enough to reuse.
- *
- * A notification can sit in a chat someone else sees; a full NUBAN in it is a
- * detail worth withholding when the last four already identify the account to
- * its owner.
- */
 function maskAccount(accountNumber: string): string {
   if (accountNumber.length <= 4) return accountNumber;
   return `••••${accountNumber.slice(-4)}`;

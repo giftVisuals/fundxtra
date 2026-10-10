@@ -23,46 +23,29 @@ export interface ReceiptLine {
   mono?: boolean;
 }
 
-export interface ReceiptSection {
-  title: string;
-  lines: ReceiptLine[];
-}
-
 export interface ReceiptImageInput {
-  kind: string;
   statusLabel: string;
   statusTone: 'pending' | 'good' | 'bad';
   amountKobo: number;
   amountPrefix?: string;
-  amountInWords: string;
-  sections: ReceiptSection[];
-  footer: string;
+  /** Under the amount, where a bank app puts it. */
+  when: string;
+  /**
+   * One flat list, not grouped sections.
+   *
+   * Grouping cost a heading and two gaps per group — about a third of the
+   * height of the whole document — to organise eleven rows that read fine in
+   * a single column. The receipt was taller than a phone screen, which is the
+   * one place it is ever looked at.
+   */
+  lines: ReceiptLine[];
   /** Where the receipt came from, for whoever it gets forwarded to. */
   source: string;
-  issuedAt: string;
 }
 
 const WIDTH = 720;
 const PAD = 44;
 const SCALE = 2;
-
-/** Wraps text to a width, returning the lines. */
-function wrap(context: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
-  const words = text.split(/\s+/);
-  const lines: string[] = [];
-  let line = '';
-  for (const word of words) {
-    const candidate = line ? `${line} ${word}` : word;
-    if (context.measureText(candidate).width > maxWidth && line) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = candidate;
-    }
-  }
-  if (line) lines.push(line);
-  return lines;
-}
 
 /**
  * Paints the Fundxtra mark into a square box on the canvas.
@@ -105,40 +88,32 @@ function drawMark(
 function paintReceipt(context: CanvasRenderingContext2D, input: ReceiptImageInput): number {
   const sans = tokens.typography.fontSans.replace('var(--font-sans), ', '');
   const mono = tokens.typography.fontMono;
-  const rowHeight = 34;
 
-  // Header wash, matching the on-screen receipt.
-  const wash = context.createLinearGradient(0, 0, 0, 250);
-  wash.addColorStop(0, tokens.colors.cocoa[50]);
-  wash.addColorStop(1, '#ffffff');
-  context.fillStyle = wash;
-  context.fillRect(0, 0, WIDTH, 250);
+  context.fillStyle = tokens.colors.cocoa[50];
+  context.fillRect(0, 0, WIDTH, 6);
 
-  let y = 56;
+  let y = 54;
 
-  // Wordmark: the real mark knocked out in white on the brown badge, drawn
-  // from the same path the app renders, so the document and the screen agree.
-  const badge = 30;
-  const badgeX = WIDTH / 2 - 84;
+  /*
+    Brand on the left, status on the right, one line.
+
+    This used to be three stacked centred blocks — badge, then the kind of
+    receipt, then the status pill — about 130px before the amount had even
+    started. A receipt is read on a phone, in one glance, and every row above
+    the number pushes the number further out of sight.
+  */
+  const badge = 28;
   context.fillStyle = tokens.semantic.brand;
   context.beginPath();
-  context.roundRect(badgeX, y - 22, badge, badge, 9);
+  context.roundRect(PAD, y - 21, badge, badge, 8);
   context.fill();
-  drawMark(context, badgeX + 6, y - 16, badge - 12, '#ffffff');
+  drawMark(context, PAD + 6, y - 15, badge - 12, '#ffffff');
 
   context.fillStyle = tokens.semantic.brandInk;
-  context.font = `700 21px ${sans}`;
+  context.font = `700 19px ${sans}`;
   context.textAlign = 'left';
-  context.fillText('Fundxtra', WIDTH / 2 - 46, y);
+  context.fillText('Fundxtra', PAD + badge + 10, y);
 
-  y += 30;
-  context.textAlign = 'center';
-  context.fillStyle = tokens.semantic.inkSubtle;
-  context.font = `700 11px ${sans}`;
-  context.fillText(input.kind.toUpperCase(), WIDTH / 2, y);
-
-  // Status pill.
-  y += 30;
   const tone =
     input.statusTone === 'good'
       ? { fill: tokens.colors.success.soft, text: tokens.colors.success.strong }
@@ -146,20 +121,22 @@ function paintReceipt(context: CanvasRenderingContext2D, input: ReceiptImageInpu
         ? { fill: tokens.colors.danger.soft, text: tokens.colors.danger.strong }
         : { fill: tokens.colors.warning.soft, text: tokens.colors.warning.strong };
 
-  context.font = `700 12px ${sans}`;
+  context.font = `700 11px ${sans}`;
   const pillText = input.statusLabel.toUpperCase();
-  const pillWidth = context.measureText(pillText).width + 32;
+  const pillWidth = context.measureText(pillText).width + 26;
   context.fillStyle = tone.fill;
   context.beginPath();
-  context.roundRect(WIDTH / 2 - pillWidth / 2, y - 15, pillWidth, 26, 13);
+  context.roundRect(WIDTH - PAD - pillWidth, y - 18, pillWidth, 24, 12);
   context.fill();
   context.fillStyle = tone.text;
-  context.fillText(pillText, WIDTH / 2, y + 3);
+  context.textAlign = 'center';
+  context.fillText(pillText, WIDTH - PAD - pillWidth / 2, y - 2);
 
-  // Amount.
-  y += 62;
+  // The amount, as big as it can be: it is the whole point of the document.
+  y += 66;
+  context.textAlign = 'center';
   context.fillStyle = tokens.semantic.ink;
-  context.font = `700 46px ${sans}`;
+  context.font = `700 52px ${sans}`;
   context.fillText(
     `${input.amountPrefix ?? ''}${formatNaira(Math.abs(input.amountKobo))}`,
     WIDTH / 2,
@@ -169,65 +146,43 @@ function paintReceipt(context: CanvasRenderingContext2D, input: ReceiptImageInpu
   y += 26;
   context.fillStyle = tokens.semantic.inkSubtle;
   context.font = `400 14px ${sans}`;
-  context.fillText(input.amountInWords, WIDTH / 2, y);
+  context.fillText(input.when, WIDTH / 2, y);
 
-  // Sections.
-  y += 46;
-  for (const section of input.sections) {
-    // Reset explicitly: the previous section's values left this as 'right',
-    // which pushed every title after the first one off the left edge.
+  // The rows: label left, value right, a dashed rule under each.
+  y += 44;
+  for (const line of input.lines) {
     context.textAlign = 'left';
-    context.fillStyle = tokens.semantic.inkFaint;
-    context.font = `700 11px ${sans}`;
-    context.fillText(section.title.toUpperCase(), PAD, y);
-    y += 22;
+    context.fillStyle = tokens.semantic.inkSubtle;
+    context.font = `400 14px ${sans}`;
+    context.fillText(line.label, PAD, y);
 
-    for (const line of section.lines) {
-      context.fillStyle = tokens.semantic.inkSubtle;
-      context.font = `400 14px ${sans}`;
-      context.textAlign = 'left';
-      context.fillText(line.label, PAD, y);
+    context.textAlign = 'right';
+    context.fillStyle = tokens.semantic.ink;
+    context.font = line.mono ? `600 13px ${mono}` : `600 14px ${sans}`;
+    context.fillText(line.value, WIDTH - PAD, y);
 
-      context.fillStyle = tokens.semantic.ink;
-      context.font = line.mono ? `600 13px ${mono}` : `600 14px ${sans}`;
-      context.textAlign = 'right';
-      context.fillText(line.value, WIDTH - PAD, y);
-      y += rowHeight;
-    }
-
-    // Dashed rule between sections.
+    y += 14;
     context.strokeStyle = tokens.semantic.border;
-    context.setLineDash([4, 4]);
+    context.setLineDash([4, 5]);
     context.lineWidth = 1;
     context.beginPath();
-    context.moveTo(PAD, y - 12);
-    context.lineTo(WIDTH - PAD, y - 12);
+    context.moveTo(PAD, y);
+    context.lineTo(WIDTH - PAD, y);
     context.stroke();
     context.setLineDash([]);
-    y += 22;
+    y += 24;
   }
 
-  // Footer.
-  y += 6;
+  /*
+    One line, not a paragraph. A shared receipt outlives the app it was made
+    in, so it has to say where it came from — but the disclaimer that used to
+    wrap to three lines said nothing the reference and the brand do not.
+  */
+  y += 8;
   context.textAlign = 'center';
-  context.fillStyle = tokens.semantic.inkSubtle;
-  context.font = `400 12px ${sans}`;
-  for (const line of wrap(context, input.footer, WIDTH - PAD * 3)) {
-    context.fillText(line, WIDTH / 2, y);
-    y += 18;
-  }
-
-  // Where the receipt came from. A shared receipt outlives the app it was made
-  // in, and without this it is an image of some numbers.
-  y += 10;
   context.fillStyle = tokens.semantic.brandInk;
   context.font = `600 12px ${sans}`;
   context.fillText(input.source, WIDTH / 2, y);
-
-  y += 18;
-  context.fillStyle = tokens.semantic.inkFaint;
-  context.font = `400 10px ${sans}`;
-  context.fillText(`Issued ${input.issuedAt}`, WIDTH / 2, y);
 
   return y;
 }
