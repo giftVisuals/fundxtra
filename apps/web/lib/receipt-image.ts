@@ -265,15 +265,19 @@ function paintReceipt(context: CanvasRenderingContext2D, input: ReceiptImageInpu
   */
   y += 22;
   const footerTop = y - 34;
-  context.fillStyle = tokens.colors.cocoa[50];
-  context.fillRect(cardX, footerTop, cardW, 76);
+  /*
+    Tinted enough to read against the ground, because the torn edge below is
+    cut out of this strip — at a paler tint the wave was invisible.
+  */
+  context.fillStyle = tokens.colors.cocoa[100];
+  context.fillRect(cardX, footerTop, cardW, 96);
 
   context.textAlign = 'center';
   context.fillStyle = tokens.semantic.brandInk;
   context.font = `700 21px ${sans}`;
   context.fillText(input.source, WIDTH / 2, y + 8);
 
-  return footerTop + 76;
+  return footerTop + 96;
 }
 
 export async function renderReceiptPng(input: ReceiptImageInput): Promise<Blob> {
@@ -309,32 +313,52 @@ export async function renderReceiptPng(input: ReceiptImageInput): Promise<Blob> 
   context.shadowOffsetY = 10;
   context.fillStyle = '#ffffff';
   context.beginPath();
-  context.roundRect(MARGIN, cardTop, WIDTH - MARGIN * 2, cardHeight, RADIUS);
+  // Rounded at the top, square at the bottom: the torn edge is the bottom
+  // edge, and a radius there leaves two little arcs fighting the wave.
+  context.roundRect(MARGIN, cardTop, WIDTH - MARGIN * 2, cardHeight, [RADIUS, RADIUS, 0, 0]);
   context.fill();
   context.restore();
 
   context.save();
   context.beginPath();
-  context.roundRect(MARGIN, cardTop, WIDTH - MARGIN * 2, cardHeight, RADIUS);
+  context.roundRect(MARGIN, cardTop, WIDTH - MARGIN * 2, cardHeight, [RADIUS, RADIUS, 0, 0]);
   context.clip();
   paintReceipt(context, input);
   context.restore();
 
   /*
-    A notched lower edge, so the card reads as a slip torn from a roll.
+    A wavy lower edge, the way a receipt actually comes off a roll.
 
-    Painted in the ground colour rather than punched out. Erasing them left
-    transparent holes, which look like whatever the receipt is shared onto —
-    invisible on a white chat, black blobs on a dark one. The image stays
-    fully opaque and the notches read the same everywhere.
+    Drawn as one continuous curve rather than a row of circles: separate
+    scallops read as a dotted border, while a single alternating wave reads
+    as a cut. The ground colour is painted *over* the bottom of the card
+    along that curve, so the card itself appears torn — the image stays
+    fully opaque, which matters because an erased edge takes on whatever it
+    is shared onto and turns into black blobs on a dark chat.
   */
+  const waveDepth = 16;
+  const waveLength = 40;
   context.fillStyle = tokens.colors.sand[50];
-  const notch = 19;
-  for (let x = MARGIN; x < WIDTH - MARGIN; x += notch) {
-    context.beginPath();
-    context.arc(Math.min(x + notch / 2, WIDTH - MARGIN), cardBottom, notch / 2, 0, Math.PI * 2);
-    context.fill();
+  context.beginPath();
+  context.moveTo(MARGIN, cardBottom - waveDepth);
+
+  let crest = true;
+  for (let x = MARGIN; x < WIDTH - MARGIN; x += waveLength) {
+    const end = Math.min(x + waveLength, WIDTH - MARGIN);
+    context.quadraticCurveTo(
+      (x + end) / 2,
+      cardBottom + (crest ? waveDepth : -waveDepth * 2.2),
+      end,
+      cardBottom - waveDepth,
+    );
+    crest = !crest;
   }
+
+  // Close the shape below the card so everything under the curve is ground.
+  context.lineTo(WIDTH, cardBottom + waveDepth * 2);
+  context.lineTo(0, cardBottom + waveDepth * 2);
+  context.closePath();
+  context.fill();
 
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((blob) => {
